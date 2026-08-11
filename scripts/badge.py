@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Emit a shields.io-style flat SVG badge. CLI: badge.py <label> <value> <color> <out.svg>."""
+
 import math
 import sys
 
