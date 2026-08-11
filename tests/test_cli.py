@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import crap4py
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -27,6 +29,11 @@ class CliTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_version_exits_0(self):
+        r = self._run("--version")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), f"crap4py {crap4py.__version__}")
 
     def test_help_exits_0(self):
         r = self._run("--help")
