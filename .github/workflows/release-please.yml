@@ -15,6 +15,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         with:
           release-type: python
+          release-as: 0.1.1
           # release-please reads pyproject.toml version (0.1.0) and bumps it,
           # updates CHANGELOG.md, opens a release PR, and on merge of that
           # PR creates the git tag + GitHub Release FROM CI.
