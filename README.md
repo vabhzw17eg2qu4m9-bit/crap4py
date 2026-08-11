@@ -1,7 +1,7 @@
 # crap4py
 
 [![Quality](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/actions/workflows/quality.yml/badge.svg)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/actions/workflows/quality.yml)
-[![version](https://img.shields.io/github/v/tag/vabhzw17eg2qu4m9-bit/crap4py?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/releases)
+[![version](https://img.shields.io/github/v/release/vabhzw17eg2qu4m9-bit/crap4py?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/releases)
 ![CRAP](badges/crap.svg)
 ![coverage](badges/coverage.svg)
 
