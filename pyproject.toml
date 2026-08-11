@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crap4py"
+version = "0.1.0"
+description = "CRAP (Change Risk Anti-Patterns) metric for Python — a crap4java port. Stdlib only, zero runtime dependencies."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "crap4py contributors" }]
+keywords = ["crap", "cyclomatic-complexity", "coverage", "metric", "quality"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Quality Assurance",
+    "Environment :: Console",
+]
+# No runtime dependencies. Stdlib only.
+
+[project.scripts]
+crap4py = "crap4py.cli:main"
+
+[tool.setuptools]
+packages = ["crap4py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
