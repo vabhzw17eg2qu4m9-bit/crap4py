@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import __version__
 from .analyzer import analyze
 from .files import changed_files, expand_paths, find_source_files
 from .report import format_report
@@ -26,6 +27,7 @@ Options:
   --coverage <path>            Coverage file (default: coverage.json).
   --threshold <num>            CRAP threshold (default: 8.0).
   --run-tests                  Run tests under coverage before analyzing.
+  --version                    Print version and exit.
 """
 
 
@@ -47,6 +49,12 @@ def _build_parser() -> _ArgumentParser:
         epilog=_USAGE,
     )
     parser.add_argument("--help", action="help", help="show this help message and exit")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="print version and exit",
+    )
     parser.add_argument("--changed", action="store_true", help="analyze git-changed files only")
     parser.add_argument(
         "--coverage", default=DEFAULT_COVERAGE, help=f"coverage file (default: {DEFAULT_COVERAGE})"
