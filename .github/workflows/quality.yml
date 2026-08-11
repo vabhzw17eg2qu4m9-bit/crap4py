@@ -34,6 +34,7 @@ jobs:
       - name: Refresh CRAP + coverage badges
         # Self-hosting: regenerate the README badges from this run's max CRAP
         # and overall coverage, then commit them back so the badges stay live.
+        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
         run: |
           set -e
           max_crap=$(crap4py --coverage coverage.json | sed -n 's/^Max CRAP: \([0-9.]*\).*/\1/p' | tail -n1)
@@ -60,6 +61,8 @@ jobs:
           python scripts/badge.py CRAP "$crap_value" "$crap_color" badges/crap.svg
           python scripts/badge.py coverage "${cov_pct}%" "$cov_color" badges/coverage.svg
       - name: Commit refreshed badges
+        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+        continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -67,6 +70,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "badges unchanged"
           else
-            git commit -m "chore: refresh CRAP/coverage badges [skip ci]"
+            git commit -m "chore: refresh CRAP/coverage badges"
             git push
           fi
