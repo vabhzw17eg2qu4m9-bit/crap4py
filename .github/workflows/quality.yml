@@ -1,0 +1,31 @@
+name: Quality
+
+on: [push, pull_request]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          check-latest: true
+      - name: Install package + coverage + ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install coverage ruff
+      - name: Format check (ruff)
+        run: ruff format --check .
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test with coverage
+        run: |
+          coverage run -m unittest discover -s tests
+          coverage json -o coverage.json
+      - name: Self-analyze (crap4py on its own source)
+        # Self-hosting: the tool computes CRAP for its own source. crap4py
+        # currently passes its default 8.0 threshold (max CRAP ~5), so this is
+        # a blocking gate. Mirrors the crap4dart CI self-analysis step.
+        run: crap4py
