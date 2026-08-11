@@ -1,0 +1,20 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: python
+          # release-please reads pyproject.toml version (0.1.0) and bumps it,
+          # updates CHANGELOG.md, opens a release PR, and on merge of that
+          # PR creates the git tag + GitHub Release FROM CI.
