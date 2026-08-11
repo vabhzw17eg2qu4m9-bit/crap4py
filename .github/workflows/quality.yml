@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   quality:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,3 +31,42 @@ jobs:
         # currently passes its default 8.0 threshold (max CRAP ~5), so this is
         # a blocking gate. Mirrors the crap4dart CI self-analysis step.
         run: crap4py
+      - name: Refresh CRAP + coverage badges
+        # Self-hosting: regenerate the README badges from this run's max CRAP
+        # and overall coverage, then commit them back so the badges stay live.
+        run: |
+          set -e
+          max_crap=$(crap4py --coverage coverage.json | sed -n 's/^Max CRAP: \([0-9.]*\).*/\1/p' | tail -n1)
+          cov_pct=$(python -c "import json;print(round(json.load(open('coverage.json'))['totals']['percent_covered'],1))")
+          if [ -z "${max_crap:-}" ] || echo "$max_crap" | grep -q 'N/A'; then
+            crap_color='#9f9f9f'; max_crap='N/A'
+          elif awk -v m="$max_crap" 'BEGIN{exit !(m<=8.0)}'; then
+            crap_color='#4c1'
+          elif awk -v m="$max_crap" 'BEGIN{exit !(m<=16.0)}'; then
+            crap_color='#dfb317'
+          else
+            crap_color='#e05d44'
+          fi
+          if [ "$max_crap" = 'N/A' ]; then
+            crap_value='N/A'
+          else
+            crap_value=$(printf '%.2f' "$max_crap")
+          fi
+          if awk -v c="$cov_pct" 'BEGIN{exit !(c+0<60)}'; then cov_color='#e05d44'
+          elif awk -v c="$cov_pct" 'BEGIN{exit !(c+0<70)}'; then cov_color='#fe7d37'
+          elif awk -v c="$cov_pct" 'BEGIN{exit !(c+0<80)}'; then cov_color='#dfb317'
+          elif awk -v c="$cov_pct" 'BEGIN{exit !(c+0<90)}'; then cov_color='#a4a61d'
+          else cov_color='#4c1'; fi
+          python scripts/badge.py CRAP "$crap_value" "$crap_color" badges/crap.svg
+          python scripts/badge.py coverage "${cov_pct}%" "$cov_color" badges/coverage.svg
+      - name: Commit refreshed badges
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add badges/crap.svg badges/coverage.svg
+          if git diff --cached --quiet; then
+            echo "badges unchanged"
+          else
+            git commit -m "chore: refresh CRAP/coverage badges [skip ci]"
+            git push
+          fi

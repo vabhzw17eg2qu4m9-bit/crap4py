@@ -1,5 +1,10 @@
 # crap4py
 
+[![Quality](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/actions/workflows/quality.yml/badge.svg)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/actions/workflows/quality.yml)
+[![version](https://img.shields.io/github/v/tag/vabhzw17eg2qu4m9-bit/crap4py?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/releases)
+![CRAP](badges/crap.svg)
+![coverage](badges/coverage.svg)
+
 **CRAP (Change Risk Anti-Patterns) metric for Python** — a port of
 [`crap4java`](https://github.com/crap4java/crap4java) / `crap4dart`.
 
@@ -154,6 +159,16 @@ crap4py/
     files.py              source finder + git changed + path expansion
     runtests.py           --run-tests driver
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json
+```
+
+## Development
+
+A checked-in pre-commit hook runs `crap4py` with its 8.0 threshold on staged
+`.py` files and blocks the commit if any exceeds it. Enable it once after
+cloning:
+
+```bash
+git config core.hooksPath githooks
 ```
 
 ## Running the tests
