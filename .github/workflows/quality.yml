@@ -2,11 +2,12 @@ name: Quality
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -31,12 +32,31 @@ jobs:
         # currently passes its default 8.0 threshold (max CRAP ~5), so this is
         # a blocking gate. Mirrors the crap4dart CI self-analysis step.
         run: crap4py
+
+  commit-badges:
+    needs: quality
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          check-latest: true
+      - name: Install package + coverage
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install coverage
       - name: Refresh CRAP + coverage badges
         # Self-hosting: regenerate the README badges from this run's max CRAP
         # and overall coverage, then commit them back so the badges stay live.
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
         run: |
           set -e
+          coverage run -m unittest discover -s tests
+          coverage json -o coverage.json
           max_crap=$(crap4py --coverage coverage.json | sed -n 's/^Max CRAP: \([0-9.]*\).*/\1/p' | tail -n1)
           cov_pct=$(python -c "import json;print(round(json.load(open('coverage.json'))['totals']['percent_covered'],1))")
           if [ -z "${max_crap:-}" ] || echo "$max_crap" | grep -q 'N/A'; then
@@ -61,12 +81,11 @@ jobs:
           python scripts/badge.py CRAP "$crap_value" "$crap_color" badges/crap.svg
           python scripts/badge.py coverage "${cov_pct}%" "$cov_color" badges/coverage.svg
       - name: Commit refreshed badges
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add badges/crap.svg badges/coverage.svg
+          git add badges/*.svg
           if git diff --cached --quiet; then
             echo "badges unchanged"
           else
