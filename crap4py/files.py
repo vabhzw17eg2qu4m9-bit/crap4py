@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -11,6 +13,7 @@ PathLike = str | Path
 _EXCLUDE_DIRS = frozenset(
     {"__pycache__", ".venv", "venv", "build", "dist", "site-packages", ".git"}
 )
+_TEST_DIRS = frozenset({"test", "tests"})
 
 
 def find_source_files(project_root: PathLike) -> list[Path]:
@@ -77,6 +80,27 @@ def _is_excluded(path: Path, project_root: Path) -> bool:
         return True
     name = path.name
     return name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py")
+
+
+def is_test_file(path: PathLike, project_root: PathLike) -> bool:
+    """Whether ``path`` is a test file or lives under a test directory."""
+    name = Path(path).name
+    if name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py":
+        return True
+    try:
+        parts = Path(path).resolve().relative_to(Path(project_root).resolve()).parts
+    except ValueError:
+        return False
+    return any(part in _TEST_DIRS for part in parts[:-1])
+
+
+def parse_file(path: PathLike) -> ast.Module | None:
+    """Parse a Python source file; warn on stderr and return None when broken."""
+    try:
+        return ast.parse(Path(path).read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+        print(f"Warning: could not parse {path}: {exc}", file=sys.stderr)
+        return None
 
 
 def _parse_status_line(line: str) -> str | None:

@@ -59,6 +59,12 @@ crap4py --coverage cov.json  # override the coverage file path
 crap4py --run-tests          # run tests under coverage, then analyze
 crap4py profile              # run tests against instrumented source; report timings
 crap4py file-naming          # check source file names for mechanical names
+crap4py nesting              # check functions for nesting deeper than 5 levels
+crap4py class-size           # check classes for >25 methods or WMC >80
+crap4py weight-of-class      # check classes for public data weight >0.33
+crap4py unused-code          # check for unused private module declarations
+crap4py unused-files         # check for source files never imported
+crap4py banned-imports       # enforce --from/--forbid import boundaries
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -101,6 +107,35 @@ which usually mean code was split without a domain boundary. Technical stems
 where digits carry meaning (`base64.py`, `sha256.py`, `utf8.py`, ...) are
 allowed. Prints one line per violation plus a summary; exits `2` iff any
 violations.
+
+## Gate subcommands (ported from crap4dart 0.5.x)
+
+Six quality-gate checks, each a standalone subcommand taking optional
+explicit paths (default: the normal §4-style selection — `src/` else `.`,
+test files skipped). All exit `2` iff violations, `1` on usage errors.
+
+| Subcommand                | Fails when …                                                        |
+|---------------------------|---------------------------------------------------------------------|
+| `nesting [paths...]`      | a function's control-flow nesting exceeds 5 levels (body = 1).      |
+| `class-size [paths...]`   | a class has >25 concrete methods or a complexity sum (WMC) >80.     |
+| `weight-of-class [paths…]`| a class's public data share (`self.<attr>` fields ÷ public members) >0.33. |
+| `unused-code [paths...]`  | a module-level private name (`_func`, `_x = …`) is never referenced in its module. |
+| `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py`/`__main__.py` exempt). |
+| `banned-imports [--from GLOB --forbid GLOB [--message MSG]]... [paths...]` | a file matching `from` imports something matching `forbid` (raw dotted name or resolved project path). |
+
+`unused-code` and `unused-files` are whole-project checks: given explicit
+paths they skip with `not meaningful for a partial selection` (exit `0`),
+since a partial file set yields false positives. `banned-imports` pairs
+`--from`/`--forbid` in CLI order (unequal counts → exit `1`); with no rules
+it passes and says so.
+
+```bash
+crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
+```
+
+crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
+per-path threshold entries, yaml config, baselines) are not ported — ports
+are flag-based with upstream default thresholds.
 
 ## `crap4py skill`
 
@@ -160,7 +195,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` / `file-naming` violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -197,6 +232,13 @@ crap4py/
     args.py               shared argparse parser (usage errors exit 1)
     profile.py            `profile` subcommand: instrumentation + timing report
     file_naming.py        `file-naming` subcommand
+    nesting.py            `nesting` gate subcommand (max depth 5)
+    class_size.py         `class-size` gate subcommand (25 methods / WMC 80)
+    weight_of_class.py    `weight-of-class` gate subcommand (data weight 0.33)
+    unused_code.py        `unused-code` gate subcommand (dead private names)
+    unused_files.py       `unused-files` gate subcommand (never imported)
+    banned_imports.py     `banned-imports` gate subcommand (import boundaries)
+    imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json
 ```
