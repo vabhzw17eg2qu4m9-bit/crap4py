@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import __version__
 from .analyzer import analyze
+from .args import UsageErrorParser
 from .files import changed_files, expand_paths, find_source_files
 from .report import format_report
 from .runtests import run_tests
@@ -16,11 +17,16 @@ from .runtests import run_tests
 DEFAULT_THRESHOLD = 8.0
 DEFAULT_COVERAGE = "coverage.json"
 
+_SUBCOMMANDS = ("profile", "skill", "file-naming")
+
 _USAGE = """\
 Usage:
   crap4py                      Analyze all Python files under src/ (else .).
   crap4py --changed            Analyze git-changed Python files.
   crap4py <path>...            Analyze explicit files; directories expand to .py files.
+  crap4py profile [opts] [p..] Run tests against instrumented source; report timings.
+  crap4py file-naming [path]   Check source file names for mechanical names.
+  crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
 Options:
@@ -28,20 +34,14 @@ Options:
   --threshold <num>            CRAP threshold (default: 8.0).
   --run-tests                  Run tests under coverage before analyzing.
   --version                    Print version and exit.
+
+Subcommands are recognized only as the first argument; anything else
+(including flags and paths) is analyzed as above.
 """
 
 
-class _ArgumentParser(argparse.ArgumentParser):
-    """Usage errors exit 1 (not argparse's default 2, which we reserve for threshold)."""
-
-    def error(self, message: str) -> None:  # type: ignore[override]
-        self.print_usage(sys.stderr)
-        sys.stderr.write(f"{self.prog}: error: {message}\n")
-        raise SystemExit(1)
-
-
-def _build_parser() -> _ArgumentParser:
-    parser = _ArgumentParser(
+def _build_parser() -> UsageErrorParser:
+    parser = UsageErrorParser(
         prog="crap4py",
         description="CRAP (Change Risk Anti-Patterns) metric for Python — crap4java port.",
         add_help=False,
@@ -69,7 +69,11 @@ def _build_parser() -> _ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI. Returns 0 (ok), 1 (usage/IO error), or 2 (CRAP threshold exceeded)."""
-    args = _build_parser().parse_args(argv)
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    dispatched = _dispatch_subcommand(args_list, Path.cwd())
+    if dispatched is not None:
+        return dispatched
+    args = _build_parser().parse_args(args_list)
     project_root = Path.cwd()
 
     if args.changed and args.paths:
@@ -115,3 +119,13 @@ def _select_files(args: argparse.Namespace, project_root: Path) -> list[Path]:
     if args.paths:
         return expand_paths(args.paths, project_root)
     return find_source_files(project_root)
+
+
+def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None:
+    """Run a subcommand when the first argument names one; else None (analyze)."""
+    if not args_list or args_list[0] not in _SUBCOMMANDS:
+        return None
+    from . import file_naming, profile, skill
+
+    handlers = {"profile": profile.run, "skill": skill.run, "file-naming": file_naming.run}
+    return handlers[args_list[0]](args_list[1:], project_root)
