@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.2.0...v0.3.0) (2026-08-14)
+
+
+### Features
+
+* port 6 gate checks from crap4dart 0.5.x as subcommands ([#12](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/12)) ([29e6c74](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/29e6c7475f8da3b3f867c458adbf8acdd9ce6f2b))
+
 ## [0.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.1.1...v0.2.0) (2026-08-14)
 
 
