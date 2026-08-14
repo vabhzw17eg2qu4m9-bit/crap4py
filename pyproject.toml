@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crap4py"
-version = "0.2.0"
+version = "0.3.0"
 description = "CRAP (Change Risk Anti-Patterns) metric for Python — a crap4java port. Stdlib only, zero runtime dependencies."
 readme = "README.md"
 requires-python = ">=3.11"
