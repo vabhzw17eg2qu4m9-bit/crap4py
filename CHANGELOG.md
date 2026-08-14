@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.1.1...v0.2.0) (2026-08-14)
+
+
+### Features
+
+* port profile/skill/file-naming commands from crap4dart 0.4.0 ([#10](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/10)) ([198097c](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/198097cca7343f8eb977e122c4b93a24673876b0))
+
 ## [0.1.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.1.0...v0.1.1) (2026-08-11)
 
 
