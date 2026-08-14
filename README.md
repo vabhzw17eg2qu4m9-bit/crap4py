@@ -57,6 +57,9 @@ crap4py path/to/file.py      # analyze explicit files/dirs
 crap4py --threshold 5.0      # override the CRAP threshold (default 8.0)
 crap4py --coverage cov.json  # override the coverage file path
 crap4py --run-tests          # run tests under coverage, then analyze
+crap4py profile              # run tests against instrumented source; report timings
+crap4py file-naming          # check source file names for mechanical names
+crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
 
@@ -71,6 +74,39 @@ crap4py --help               # print usage
 | `--help`           | Print usage and exit.                                                |
 
 `--changed` is mutually exclusive with explicit paths.
+
+## `crap4py profile`
+
+A source-instrumentation profiler: copies the project to a temp dir, wraps
+every function body in `time.perf_counter()` + `try/finally` (stdlib `ast`),
+runs the test suite (pytest, unittest fallback) against the instrumented
+copy, and reports exact per-method timing.
+
+```bash
+crap4py profile                      # profile the whole suite
+crap4py profile --name "parser"      # only run tests matching (pytest -k)
+crap4py profile --top 10             # limit console rows (default 20)
+crap4py profile --threshold 10.0     # exit 2 when any total exceeds 10ms
+```
+
+Console columns: `TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE`.
+Full reports are written to `profile-reports/profile-<timestamp>.txt` and
+`.json` regardless of `--top`.
+
+## `crap4py file-naming`
+
+Flags mechanical source file names — generic dumping-ground stems
+(`utils.py`, `helpers.py`) and numeric suffixes (`batch1.py`, `report2.py`) —
+which usually mean code was split without a domain boundary. Technical stems
+where digits carry meaning (`base64.py`, `sha256.py`, `utf8.py`, ...) are
+allowed. Prints one line per violation plus a summary; exits `2` iff any
+violations.
+
+## `crap4py skill`
+
+Prints the profiling skill instructions (when to profile, how the
+instrumentation works, how to read the report) and how to install them as an
+agent skill.
 
 ## Generating coverage data
 
@@ -124,7 +160,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded; `CRAP threshold exceeded: <max> > <n>` on stderr. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` / `file-naming` violations. |
 
 ## Cyclomatic complexity rules
 
@@ -150,7 +186,7 @@ crap4py/
   crap4py/
     __init__.py
     __main__.py           python -m crap4py entry
-    cli.py                argparse + exit codes
+    cli.py                subcommand dispatch + argparse + exit codes
     crap.py               formula + dataclasses
     complexity.py         ast-based cyclomatic complexity
     coverage.py           coverage.py JSON parser + attribution
@@ -158,6 +194,10 @@ crap4py/
     report.py             tabular formatter
     files.py              source finder + git changed + path expansion
     runtests.py           --run-tests driver
+    args.py               shared argparse parser (usage errors exit 1)
+    profile.py            `profile` subcommand: instrumentation + timing report
+    file_naming.py        `file-naming` subcommand
+    skill.py              `skill` subcommand
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json
 ```
 

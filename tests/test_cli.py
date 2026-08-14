@@ -80,6 +80,10 @@ class CliTest(unittest.TestCase):
         r = self._run("--bogus-flag")
         self.assertEqual(r.returncode, 1, r.stderr)
 
+    def test_profile_bad_flag_exits_1(self):
+        r = self._run("profile", "--bogus")
+        self.assertEqual(r.returncode, 1, r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
