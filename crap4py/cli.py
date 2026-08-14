@@ -17,7 +17,17 @@ from .runtests import run_tests
 DEFAULT_THRESHOLD = 8.0
 DEFAULT_COVERAGE = "coverage.json"
 
-_SUBCOMMANDS = ("profile", "skill", "file-naming")
+_SUBCOMMANDS = (
+    "profile",
+    "skill",
+    "file-naming",
+    "nesting",
+    "class-size",
+    "weight-of-class",
+    "unused-code",
+    "unused-files",
+    "banned-imports",
+)
 
 _USAGE = """\
 Usage:
@@ -26,6 +36,12 @@ Usage:
   crap4py <path>...            Analyze explicit files; directories expand to .py files.
   crap4py profile [opts] [p..] Run tests against instrumented source; report timings.
   crap4py file-naming [path]   Check source file names for mechanical names.
+  crap4py nesting [path]       Check functions for nesting deeper than 5 levels.
+  crap4py class-size [path]    Check classes for >25 methods or WMC >80.
+  crap4py weight-of-class [p.] Check classes for public data weight >0.33.
+  crap4py unused-code [path]   Check for unused private module declarations.
+  crap4py unused-files [path]  Check for source files never imported.
+  crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -125,7 +141,27 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
     """Run a subcommand when the first argument names one; else None (analyze)."""
     if not args_list or args_list[0] not in _SUBCOMMANDS:
         return None
-    from . import file_naming, profile, skill
+    from . import (
+        banned_imports,
+        class_size,
+        file_naming,
+        nesting,
+        profile,
+        skill,
+        unused_code,
+        unused_files,
+        weight_of_class,
+    )
 
-    handlers = {"profile": profile.run, "skill": skill.run, "file-naming": file_naming.run}
+    handlers = {
+        "profile": profile.run,
+        "skill": skill.run,
+        "file-naming": file_naming.run,
+        "nesting": nesting.run,
+        "class-size": class_size.run,
+        "weight-of-class": weight_of_class.run,
+        "unused-code": unused_code.run,
+        "unused-files": unused_files.run,
+        "banned-imports": banned_imports.run,
+    }
     return handlers[args_list[0]](args_list[1:], project_root)

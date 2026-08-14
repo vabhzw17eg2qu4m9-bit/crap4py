@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
-from .files import PathLike, expand_paths, find_source_files
+from .files import PathLike, expand_paths, find_source_files, is_test_file
 
 GENERIC_STEMS = frozenset(
     {
@@ -91,7 +91,6 @@ ALLOWED_NUMERIC_STEMS = frozenset(
 )
 
 _NUMERIC_SUFFIX = re.compile(r"[a-z_][0-9]+$")
-_TEST_DIRS = frozenset({"test", "tests"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +132,7 @@ def check_files(files: Iterable[PathLike], project_root: PathLike) -> NamingResu
     checked = 0
     for file_path in files:
         p = Path(file_path)
-        if _is_test_file(p, root):
+        if is_test_file(p, root):
             continue
         checked += 1
         message = violation_for(p)
@@ -177,16 +176,3 @@ def _build_parser() -> UsageErrorParser:
         "paths", nargs="*", help="explicit files or directories (default: normal selection)"
     )
     return parser
-
-
-def _is_test_file(path: Path, root: Path) -> bool:
-    name = path.name
-    return name.startswith("test_") or name.endswith("_test.py") or _under_test_dir(path, root)
-
-
-def _under_test_dir(path: Path, root: Path) -> bool:
-    try:
-        parts = path.resolve().relative_to(root.resolve()).parts
-    except ValueError:
-        return False
-    return any(part in _TEST_DIRS for part in parts[:-1])
