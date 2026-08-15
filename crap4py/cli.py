@@ -27,6 +27,7 @@ _SUBCOMMANDS = (
     "unused-code",
     "unused-files",
     "banned-imports",
+    "magic-constants",
 )
 
 _USAGE = """\
@@ -42,6 +43,7 @@ Usage:
   crap4py unused-code [path]   Check for unused private module declarations.
   crap4py unused-files [path]  Check for source files never imported.
   crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
+  crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -145,6 +147,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         banned_imports,
         class_size,
         file_naming,
+        magic_constants,
         nesting,
         profile,
         skill,
@@ -163,5 +166,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "unused-code": unused_code.run,
         "unused-files": unused_files.run,
         "banned-imports": banned_imports.run,
+        "magic-constants": magic_constants.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
