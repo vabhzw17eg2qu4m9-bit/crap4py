@@ -32,6 +32,7 @@ crap4py weight-of-class [p.] Check classes for public data weight >0.33.
 crap4py unused-code [path]   Check for unused private module declarations.
 crap4py unused-files [path]  Check for source files never imported.
 crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
+crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -43,7 +44,8 @@ crap4py --run-tests          Run tests under coverage, then analyze.
 Unknown flags → usage error (exit 1).
 
 Subcommands (`profile`, `skill`, `file-naming`, `nesting`, `class-size`,
-`weight-of-class`, `unused-code`, `unused-files`, `banned-imports`) are
+`weight-of-class`, `unused-code`, `unused-files`, `banned-imports`,
+`magic-constants`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -164,7 +166,7 @@ Exit `2` when `max(numeric CRAP) > threshold`, with
 |------|------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or empty selection).             |
 | `1`  | Usage error: bad flags, `--changed` + paths, unreadable source. |
-| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§18). |
+| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19). |
 
 ## 11. `--run-tests`
 
@@ -308,13 +310,40 @@ reported. With no rules the command passes and says so.
 Output: `<file>:<line>: import '<target>' is banned — <message>` plus a
 summary. Exit `2` iff violations.
 
-**Adaptation note (§12–§18):** crap4dart 0.5.0's gate-framework features —
+**Adaptation note (§12–§19):** crap4dart 0.5.0's gate-framework features —
 `severity` (`error`/`warning`), `ignorable`/`crap:ignore` suppression,
 per-path `entries` threshold overrides, yaml config and baselines — are
 not ported: ports have no config system, so thresholds are the upstream
-defaults (5 / 25+80 / 0.33) and each gate is a standalone subcommand.
+defaults (5 / 25+80 / 0.33 / 3+4) and each gate is a standalone subcommand.
 
-## 19. `profile`
+## 19. `magic-constants`
+
+```
+crap4py magic-constants [paths...]
+```
+
+Flags magic literals — port of the crap4dart 0.6.0 `magic_constants`
+gate. Two checks: (a) hex color integer literals (`0xRRGGBB` /
+`0xAARRGGBB`, matched on the raw source segment) outside named-constant
+declarations — Python's const convention is a module- or class-level
+assignment to ALL_CAPS name(s) (leading underscore allowed), and the
+lines spanned by its value are exempt; (b) numeric (`int`/`float`, raw
+lexeme) and string literals (value; adjacent strings are already merged
+into one `Constant`) whose value is ≥4 characters and repeats ≥3 times
+in one file — every occurrence is reported. `bool`/`None` are never
+counted, and f-strings (`JoinedStr`) are skipped (interpolated values
+are not constants).
+
+Output: `<file>:<line>: hex color outside a constant declaration` and
+`<file>:<line>: literal <value> repeats N times — extract a named
+constant`, plus a summary. Exit `2` iff violations, `1` on usage errors.
+
+Also not ported from crap4dart 0.5.2–0.6.1: the 0.5.2 profile part-of
+fix (Dart-only), the 0.6.0 baseline/severity/config knobs (no gate
+framework — adaptation note above) and the 0.6.1 internal constants
+refactor (no behavior change).
+
+## 20. `profile`
 
 ```
 crap4py profile [--name <pattern>] [--threshold <ms>] [--top <N>] [paths...]
@@ -352,14 +381,14 @@ Exit `2` when any method's total exceeds `--threshold` ms (default: off).
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
 
-## 20. `skill`
+## 21. `skill`
 
 `crap4py skill` prints a Python-adapted version of the crap4dart profiling
 skill (when to profile, how the instrumentation works, how to read the
 report) plus one line on installing it as an agent skill
 (`.agents/skills/crap4py-profiling/SKILL.md`). Exit `0`, under ~80 lines.
 
-## 21. Non-goals
+## 22. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).

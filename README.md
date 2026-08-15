@@ -65,6 +65,7 @@ crap4py weight-of-class      # check classes for public data weight >0.33
 crap4py unused-code          # check for unused private module declarations
 crap4py unused-files         # check for source files never imported
 crap4py banned-imports       # enforce --from/--forbid import boundaries
+crap4py magic-constants      # flag hex colors outside constants and repeated literals
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -108,9 +109,9 @@ where digits carry meaning (`base64.py`, `sha256.py`, `utf8.py`, ...) are
 allowed. Prints one line per violation plus a summary; exits `2` iff any
 violations.
 
-## Gate subcommands (ported from crap4dart 0.5.x)
+## Gate subcommands (ported from crap4dart 0.5.x–0.6.x)
 
-Six quality-gate checks, each a standalone subcommand taking optional
+Seven quality-gate checks, each a standalone subcommand taking optional
 explicit paths (default: the normal §4-style selection — `src/` else `.`,
 test files skipped). All exit `2` iff violations, `1` on usage errors.
 
@@ -122,6 +123,7 @@ test files skipped). All exit `2` iff violations, `1` on usage errors.
 | `unused-code [paths...]`  | a module-level private name (`_func`, `_x = …`) is never referenced in its module. |
 | `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py`/`__main__.py` exempt). |
 | `banned-imports [--from GLOB --forbid GLOB [--message MSG]]... [paths...]` | a file matching `from` imports something matching `forbid` (raw dotted name or resolved project path). |
+| `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -195,7 +197,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -238,6 +240,7 @@ crap4py/
     unused_code.py        `unused-code` gate subcommand (dead private names)
     unused_files.py       `unused-files` gate subcommand (never imported)
     banned_imports.py     `banned-imports` gate subcommand (import boundaries)
+    magic_constants.py    `magic-constants` gate subcommand (magic literals)
     imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json
