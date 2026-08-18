@@ -123,6 +123,20 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(data["a"]["minMicros"], 100.0)
         self.assertEqual(data["a"]["maxMicros"], 400.0)
 
+    def test_auto_flush_every_5_records_without_double_counting(self):
+        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        ns = self._collector()
+        for _ in range(5):
+            ns["record"]("a", 10.0)
+        self.assertTrue(self.out.exists(), "5th record must flush")
+        for _ in range(3):
+            ns["record"]("a", 10.0)
+        ns["flush"]()
+        data = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(data["a"]["calls"], 8)
+        self.assertEqual(data["a"]["totalMicros"], 80.0)
+
 
 class AttributeAndReportTest(unittest.TestCase):
     def setUp(self):
@@ -146,13 +160,39 @@ class AttributeAndReportTest(unittest.TestCase):
     def test_attribute_matches_inventory_and_ignores_unknown(self):
         src = Path(self.root) / "calc.py"
         src.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-        timings = {"add": {"calls": 3, "totalMicros": 30.0}, "ghost": {"calls": 1}}
+        timings = {"calc.add": {"calls": 3, "totalMicros": 30.0}, "ghost": {"calls": 1}}
         entries = attribute(timings, [src], self.root)
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].method, "add")
+        self.assertEqual(entries[0].method, "calc.add")
         self.assertEqual(entries[0].file, "calc.py")
         self.assertEqual(entries[0].line, 1)
         self.assertEqual(entries[0].calls, 3)
+
+    def test_same_named_methods_in_different_modules_stay_apart(self):
+        a = self.root / "a.py"
+        b = self.root / "b.py"
+        a.write_text("def run():\n    return 1\n", encoding="utf-8")
+        b.write_text("def run():\n    return 2\n", encoding="utf-8")
+        timings = {"a.run": {"calls": 1, "totalMicros": 10.0}, "b.run": {"calls": 2}}
+        entries = attribute(timings, [a, b], self.root)
+        self.assertEqual(
+            [(e.method, e.file) for e in entries], [("a.run", "a.py"), ("b.run", "b.py")]
+        )
+
+    def test_instrument_and_inventory_keys_match_with_module(self):
+        src = "def outer():\n    def inner():\n        return 1\n    return inner\n"
+        instrumented = instrument_source(src, module="pkg.mod")
+        keys = [
+            node.args[0].value
+            for node in ast.walk(ast.parse(instrumented))
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "record"
+        ]
+        path = self.root / "pkg" / "mod.py"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(src, encoding="utf-8")
+        from crap4py.profile import _method_locations
+
+        self.assertEqual(sorted(keys), sorted(_method_locations([path], self.root)), instrumented)
 
     def test_format_report_sorted_with_columns(self):
         entries = [
@@ -172,6 +212,15 @@ class AttributeAndReportTest(unittest.TestCase):
         self.assertIn("all methods OK", format_report(entries, 20, 10.0))
         self.assertTrue(profile._exceeds_threshold(entries, 1.0))
         self.assertEqual(profile._worst_ms(entries), 5.0)
+
+    def test_mean_marks_sub_30us_with_tilde(self):
+        cheap = self._entry(method="cheap", total_micros=50.0, calls=5)  # mean 10µs
+        pricey = self._entry(method="pricey", total_micros=5000.0, calls=2)  # mean 2500µs
+        report = format_report([cheap, pricey], top=20, threshold_ms=None)
+        cheap_row = next(line for line in report.splitlines() if "cheap" in line)
+        pricey_row = next(line for line in report.splitlines() if "pricey" in line)
+        self.assertIn("~10.0", cheap_row)
+        self.assertNotIn("~2500.0", pricey_row)
 
     def test_top_truncates_console_only(self):
         entries = [self._entry(method=f"m{i}", total_micros=float(i)) for i in range(5)]
@@ -229,7 +278,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(len(reports), 2)  # .txt + .json
         json_report = next(p for p in reports if p.suffix == ".json")
         data = json.loads(json_report.read_text(encoding="utf-8"))
-        self.assertEqual(data["methods"][0]["method"], "add")
+        self.assertEqual(data["methods"][0]["method"], "calc.add")
         self.assertFalse((self.root / ".crap_profile_temp").exists())
 
     def test_threshold_exceeded_exits_2(self):
@@ -263,7 +312,7 @@ class FailingTestsTest(unittest.TestCase):
                 timings = collect_timings([root / "mod.py"], root, name=None)
             self.assertIn("Warning:", err.getvalue())
             # The failing test still executed instrumented code and flushed.
-            self.assertIn("f", timings)
+            self.assertIn("mod.f", timings)
 
 
 if __name__ == "__main__":

@@ -72,14 +72,30 @@ def _collect_py_files(base: Path, project_root: Path) -> Iterable[Path]:
 
 
 def _is_excluded(path: Path, project_root: Path) -> bool:
+    return _in_excluded_dir(path, project_root) or _is_test_name(path.name)
+
+
+def _in_excluded_dir(path: Path, project_root: Path) -> bool:
     try:
         rel_parts = path.resolve().relative_to(project_root.resolve()).parts
     except ValueError:
         rel_parts = path.parts
-    if any(part in _EXCLUDE_DIRS for part in rel_parts):
-        return True
-    name = path.name
+    return any(part in _EXCLUDE_DIRS for part in rel_parts)
+
+
+def _is_test_name(name: str) -> bool:
     return name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py")
+
+
+def find_test_files(project_root: PathLike) -> list[Path]:
+    """Walk ``src/`` if present else ``.``, collecting test ``.py`` files."""
+    root = Path(project_root)
+    base = root / "src" if (root / "src").is_dir() else root
+    return sorted(
+        path
+        for path in base.rglob("*.py")
+        if is_test_file(path, root) and not _in_excluded_dir(path, root)
+    )
 
 
 def is_test_file(path: PathLike, project_root: PathLike) -> bool:

@@ -6,6 +6,12 @@ Python's const convention is an ALL_CAPS assignment, whose value lines are
 exempt; (b) numeric or string literals whose value repeats at least 3 times
 in one file — every occurrence is reported. String values shorter than 4
 characters are ignored.
+
+Identifier-position strings — dict keys (``{"theme": ...}``), index
+expressions (``obj["key"]``) and match-case literal patterns — are protocol
+identifiers, not magic constants, and are skipped (crap4dart 0.7.2/0.8.3
+precision fixes). Lines inside ALL_CAPS initializers are exempt from both
+checks (0.8.4).
 """
 
 from __future__ import annotations
@@ -90,21 +96,27 @@ def file_violations(tree: ast.Module, source: str, relative: str) -> list[MagicC
         if line not in exempt
     ]
     for key, lines in sorted(counts.items()):
-        if len(lines) < MIN_DUPLICATES:
+        occurrences = [line for line in lines if line not in exempt]
+        if len(occurrences) < MIN_DUPLICATES:
             continue
         violations.extend(
             MagicConstant(
                 relative,
                 line,
-                f"literal {key} repeats {len(lines)} times — extract a named constant",
+                f"literal {key} repeats {len(occurrences)} times — extract a named constant",
             )
-            for line in lines
+            for line in occurrences
         )
     return violations
 
 
 def constant_lines(tree: ast.Module) -> frozenset[int]:
-    """Lines spanned by values of module- or class-level ALL_CAPS assignments."""
+    """Lines spanned by values of module- or class-level ALL_CAPS assignments.
+
+    The span covers the FULL initializer subtree — nested calls, containers
+    and expressions inside it are part of the named constant (crap4dart
+    0.8.4/8071206).
+    """
     bodies = [tree.body]
     bodies += [node.body for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
     lines: set[int] = set()
@@ -136,14 +148,41 @@ def _literals(tree: ast.Module, source: str) -> tuple[list[int], dict[str, list[
 
     Adjacent string literals arrive merged as one ``Constant`` (upstream's
     adjacent-strings handling). f-strings (``JoinedStr``) are skipped —
-    interpolation makes their value dynamic, not a constant.
+    interpolation makes their value dynamic, not a constant. Strings in
+    identifier positions (dict keys, index expressions, match-case patterns)
+    are skipped — they name protocol fields, not constants.
     """
     hexes: list[int] = []
     counts: dict[str, list[int]] = {}
+    identifier_keys = _identifier_key_ids(tree)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant):
+        if isinstance(node, ast.Constant) and id(node) not in identifier_keys:
             _record(node, source, hexes, counts)
     return hexes, counts
+
+
+def _identifier_key_ids(tree: ast.Module) -> set[int]:
+    """``id()``s of str literals used as dict keys, indexes, or match patterns."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        ids |= _node_key_ids(node)
+    return ids
+
+
+def _node_key_ids(node: ast.AST) -> set[int]:
+    """Identifier-position str literals contributed by one AST node."""
+    if isinstance(node, ast.Dict):
+        return {id(k) for k in node.keys if _is_str_constant(k)}
+    if isinstance(node, ast.Subscript):
+        return {id(node.slice)} if _is_str_constant(node.slice) else set()
+    if isinstance(node, ast.MatchValue):
+        return {id(node.value)} if _is_str_constant(node.value) else set()
+    return set()
+
+
+def _is_str_constant(node: ast.AST | None) -> bool:
+    """Whether ``node`` is a plain ``str`` literal (the skipped kind upstream)."""
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
 def _record(node: ast.Constant, source: str, hexes: list[int], counts: dict) -> None:

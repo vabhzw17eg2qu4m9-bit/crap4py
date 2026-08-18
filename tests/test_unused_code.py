@@ -70,6 +70,25 @@ class UnusedNamesTest(unittest.TestCase):
         names = _names("_flag: bool = False\n")
         self.assertEqual(names, {"_flag"})
 
+    def test_cross_class_private_access_not_flagged(self):
+        """0.7.1 regression: declaring a private name must not strip the
+        name from the reference set — cross-class access in one module counts."""
+        names = _names(
+            """
+            def _helper():
+                return 1
+
+            class Consumer:
+                def run(self):
+                    return _helper()
+
+            class Producer:
+                def make(self):
+                    return _helper()
+            """
+        )
+        self.assertEqual(names, set())
+
 
 class CheckFilesTest(unittest.TestCase):
     def setUp(self):

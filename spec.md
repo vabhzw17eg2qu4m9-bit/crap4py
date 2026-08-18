@@ -33,6 +33,8 @@ crap4py unused-code [path]   Check for unused private module declarations.
 crap4py unused-files [path]  Check for source files never imported.
 crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
 crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
+crap4py test-assertions [..] Flag test bodies without assertion calls.
+crap4py folder-structure [..] Flag package dirs with loose .py files directly.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -45,7 +47,7 @@ Unknown flags → usage error (exit 1).
 
 Subcommands (`profile`, `skill`, `file-naming`, `nesting`, `class-size`,
 `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`,
-`magic-constants`) are
+`magic-constants`, `test-assertions`, `folder-structure`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -79,7 +81,9 @@ Input: a `coverage.py` JSON report. Relevant structure:
 
 - Absolute coverage paths are relativized against the project root; paths
   outside the root are ignored.
-- If the coverage file is missing, a warning is printed to stderr and all
+- If the coverage file is missing, a warning is printed to stderr (with a
+  hint naming the generation commands — `coverage run -m pytest &&
+  coverage json` or `crap4py --run-tests`; crap4dart 0.8.7) and all
   methods get `N/A` coverage and CRAP.
 - **Per-method attribution:** within `[start_line, end_line]`,
   `coverage = |executed ∩ range| / |(executed ∪ missing) ∩ range|`.
@@ -152,7 +156,10 @@ Max CRAP: 30.0 (threshold 8.0) — FAILED
 ```
 
 - Sorted by CRAP descending; `N/A` (null) entries last.
-- Ties broken by file (asc), then method name (asc) for deterministic output.
+- Ties broken by file (asc), then method name (asc) for deterministic
+  output — N/A rows never shuffle between runs (Python's sort is stable
+  and this key is a total order, satisfying the crap4dart 0.8.7
+  stable-N/A-ordering fix without a line tie-break).
 - `Cov%` rendered as a percentage with one decimal (e.g. `45.0%`) or `N/A`.
 - `CRAP` rendered with one decimal or `N/A`.
 - When all CRAP values are `N/A`, max is treated as `0.0` (verdict `passed`).
@@ -269,6 +276,12 @@ Port of the crap4dart `unused_code` gate, scoped per module.
 Output: `<file>:<line>: '<name>' is never referenced` plus a summary.
 Exit `2` iff findings.
 
+The crap4dart 0.7.1 fix (declaring a private declaration must not strip
+its name from the reference set — cross-class private access within one
+library was flagged) does not apply as a bug here: the port never removes
+declared names from the lexical reference set, so same-module cross-class
+access counts; a regression test pins this.
+
 **Partial selection:** an explicit path list makes the check skip
 (`unused-code: not meaningful for a partial selection`) with exit `0` —
 a partial file set cannot know whether a name is used elsewhere
@@ -285,7 +298,10 @@ non-test file. Imports resolve to project files: relative imports
 against the importing file's directory, absolute/dotted imports against
 the package root (`src/` when present, else the project root); stdlib
 and external imports never resolve. `__init__.py` and `__main__.py` are
-exempt. Test files do not count as importers.
+exempt. Test files do not count as importers. Python's re-exports —
+`from .impl import thing` in a package's `__init__.py` — are ordinary
+`from` imports and already count toward the graph (the crap4dart 0.7.1
+`export` fix; verified by a regression test).
 
 Output: `<file>: never imported by any analyzed source file` plus a
 summary. Exit `2` iff findings. **Partial selection skips** as in §16
@@ -310,6 +326,10 @@ reported. With no rules the command passes and says so.
 Output: `<file>:<line>: import '<target>' is banned — <message>` plus a
 summary. Exit `2` iff violations.
 
+The crap4dart 0.8.6 perf fix (compile globs to regexes once per pattern
+instead of per file) needs no port: `fnmatch.fnmatch` already caches
+compiled patterns per pattern in the standard library.
+
 **Adaptation note (§12–§19):** crap4dart 0.5.0's gate-framework features —
 `severity` (`error`/`warning`), `ignorable`/`crap:ignore` suppression,
 per-path `entries` threshold overrides, yaml config and baselines — are
@@ -323,16 +343,24 @@ crap4py magic-constants [paths...]
 ```
 
 Flags magic literals — port of the crap4dart 0.6.0 `magic_constants`
-gate. Two checks: (a) hex color integer literals (`0xRRGGBB` /
-`0xAARRGGBB`, matched on the raw source segment) outside named-constant
-declarations — Python's const convention is a module- or class-level
-assignment to ALL_CAPS name(s) (leading underscore allowed), and the
-lines spanned by its value are exempt; (b) numeric (`int`/`float`, raw
-lexeme) and string literals (value; adjacent strings are already merged
-into one `Constant`) whose value is ≥4 characters and repeats ≥3 times
-in one file — every occurrence is reported. `bool`/`None` are never
-counted, and f-strings (`JoinedStr`) are skipped (interpolated values
-are not constants).
+gate, including the 0.7.2–0.8.4 precision fixes. Two checks: (a) hex
+color integer literals (`0xRRGGBB` / `0xAARRGGBB`, matched on the raw
+source segment) outside named-constant declarations — Python's const
+convention is a module- or class-level assignment to ALL_CAPS name(s)
+(leading underscore allowed), and the lines spanned by its value are
+exempt (the full initializer subtree — nested calls, containers,
+expressions); (b) numeric (`int`/`float`, raw lexeme) and string
+literals (value; adjacent strings are already merged into one
+`Constant`) whose value is ≥4 characters and repeats ≥3 times in one
+file — every occurrence is reported, and occurrences on constant lines
+are exempt here too (0.8.4). `bool`/`None` are never counted, and
+f-strings (`JoinedStr`) are skipped (interpolated values are not
+constants).
+
+Strings in identifier positions are skipped (protocol identifiers, not
+magic constants): dict keys (`{"theme": 1}`), index expressions
+(`obj["key"]`), and match-case literal patterns (`case "ready":`).
+Call-argument strings still count.
 
 Output: `<file>:<line>: hex color outside a constant declaration` and
 `<file>:<line>: literal <value> repeats N times — extract a named
@@ -355,17 +383,26 @@ Source-instrumentation profiler (port of the crap4dart profiler):
    `profile-reports/` skipped).
 2. Rewrites every function/method body of the selected sources (default:
    normal §4 selection) via the stdlib `ast` module as
-   `t0 = perf_counter(); try: <body> finally: record(key, (perf_counter() - t0) * 1e6)`
-   — the key is the qualified method name from §6, so nested defs are
-   wrapped individually and within their parent.
+   `t0 = perf_counter(); try: <body> finally: record(key, (perf_counter() - t0) * 1e6)`.
+   The key is the **module-qualified** method name — `<module path>.` +
+   the §6 qualified name (e.g. `pkg.mod.run`, nested `pkg.mod.run.inner`)
+   — so same-named methods in different modules (every gate module
+   defines `run`) never merge into one timing row or mis-attribute
+   (0.9.2-era attribution fix).
 3. Injects `_crap_collector.py`, aggregating `(calls, totalMicros, minMicros,
-   maxMicros)` per key and merging into `.crap_profile.json` (atomic rename)
-   so several test processes combine.
+   maxMicros)` per key and merging into `.crap_profile.json` via an
+   atomic rename so several test processes combine. Temp file names carry
+   the worker pid; the flush reader retries once around a concurrent
+   rename; records flush every 5 calls (a crashed worker keeps everything
+   it flushed; successfully flushed records are cleared, so nothing is
+   double-counted) and once more at process exit (0.9.2).
 4. Runs `python -m pytest [-k <pattern>]` in the copy (fallback:
    `python -m unittest discover [-s tests] [-k <pattern>]`); a failing run
-   warns on stderr but any flushed timings are still reported.
-5. Attributes timings to the method inventory (§6 parsing); unmatched keys
-   are ignored. Temp dir removed afterwards.
+   warns on stderr but any flushed timings are still reported. The test
+   commands always run inside the temp copy (cwd), never against the
+   original sources.
+5. Attributes timings to the method inventory of the instrumented set;
+   unmatched keys are ignored. Temp dir removed afterwards.
 
 Console table sorted by TOTAL desc, limited to `--top` rows (default 20):
 
@@ -373,22 +410,85 @@ Console table sorted by TOTAL desc, limited to `--top` rows (default 20):
 TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
 ```
 
-(`%` = share of total time; `@60fps` = mean × 60 in ms.) The full report is
-also written to `profile-reports/profile-<timestamp>.txt` and `.json`.
+(`%` = share of total time; `@60fps` = mean × 60 in ms; a `~` prefix on
+`MEAN` marks sub-30µs means, where instrumentation overhead dominates —
+read CALLS/TOTAL deltas there instead.) The full report is also written
+to `profile-reports/profile-<timestamp>.txt` and `.json`.
 
 Exit `2` when any method's total exceeds `--threshold` ms (default: off).
+
+Not ported from 0.9.2's `9f9688e`: remapping positional **test** paths
+into the temp copy (the port's positional paths select sources to
+instrument, and the test runner already executes from the temp copy), and
+parsing the full source set for attribution (the port instruments exactly
+the selected set; module-qualified keys above make its inventory
+unambiguous). Upstream's flutter_test pending-timer workaround (no 1s
+flush timer) has no Python analog — flushing rides `atexit`.
 
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
 
-## 21. `skill`
+## 21. `test-assertions`
+
+```
+crap4py test-assertions [--min N] [paths...]
+```
+
+Flags `test_*` functions and methods — unittest `TestCase` methods and
+pytest-style functions, which share the naming convention — whose bodies
+contain fewer than `--min` (default 1) assertion signals. Port of the
+crap4dart 0.7.x `test_assertions` gate: a test without assertions
+compiles, runs green and verifies nothing.
+
+Counted signals (Python language map):
+
+- bare `assert` statements (the main signal),
+- `self.assert*` / `self.fail` calls (`assertEqual`, `assertRaises`,
+  `fail`, ... — includes `with self.assertRaises(...)`),
+- `raises` calls (`pytest.raises`, `from pytest import raises`) and bare
+  `fail`.
+
+File selection: default walks `src/` (else `.`) for test files
+(`test_*.py`, `*_test.py`, `conftest.py`, anything under `test`/`tests`);
+explicit paths keep only the test files among them (directories are
+walked for test files).
+
+Output: `<file>:<line>: '<Class.test_name>' has 0 assertion(s) — a test
+without assertions verifies nothing` plus a summary (`N/M tests without
+assertions` / `M tests assert their expectations`). Exit `2` iff
+violations, `1` on usage errors.
+
+## 22. `folder-structure`
+
+```
+crap4py folder-structure [--dir DIR]... [--max N]
+```
+
+Flags directories containing more than `--max` (default 0) `.py` files
+**directly** (non-recursive) — a flat-file sprawl that should be
+organized into feature subpackages. Port of the crap4dart 0.7.x
+`folder_structure` gate.
+
+Default dirs are the Python analog of Dart's `lib` — the importable
+package roots: direct children of the package root (`src/` when present,
+else the project root) that contain an `__init__.py`. `--dir` (repeatable,
+project-relative) overrides. `__init__.py` and `__main__.py` are package
+plumbing and never counted as loose files. Non-existent configured
+directories are skipped.
+
+Output: `<dir>: N loose .py files directly in <dir> — group them into
+feature packages (max M)` plus a summary (`K directories organized into
+packages` / `V directory(ies) with loose-file sprawl`). Exit `2` iff
+violations, `1` on usage errors.
+
+## 23. `skill`
 
 `crap4py skill` prints a Python-adapted version of the crap4dart profiling
 skill (when to profile, how the instrumentation works, how to read the
 report) plus one line on installing it as an agent skill
 (`.agents/skills/crap4py-profiling/SKILL.md`). Exit `0`, under ~80 lines.
 
-## 22. Non-goals
+## 24. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
@@ -398,3 +498,13 @@ report) plus one line on installing it as an agent skill
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
   are not ported. Gate severity/ignorable/entries/baseline features of
   crap4dart 0.5.0 are likewise not ported (§18 adaptation note).
+
+Not ported from crap4dart 0.7–0.9 (upstream-specific):
+
+- `broken_goldens` / tofu detection and the goldens-guard command —
+  Flutter PNG golden files have no Python analog.
+- the `external` gate (Checkstyle-XML import) — tied to the Dart/Java
+  gate-framework config system.
+- `run_tests: true` running the full suite on every analyze by default —
+  breaking for a CLI; the port keeps `--run-tests` opt-in (§11).
+- pixel-detector tuning commits — depend on `broken_goldens` (above).

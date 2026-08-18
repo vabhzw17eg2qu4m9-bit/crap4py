@@ -66,6 +66,8 @@ crap4py unused-code          # check for unused private module declarations
 crap4py unused-files         # check for source files never imported
 crap4py banned-imports       # enforce --from/--forbid import boundaries
 crap4py magic-constants      # flag hex colors outside constants and repeated literals
+crap4py test-assertions      # flag test bodies without assertion calls
+crap4py folder-structure     # flag package dirs with loose .py files directly
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -97,6 +99,10 @@ crap4py profile --threshold 10.0     # exit 2 when any total exceeds 10ms
 ```
 
 Console columns: `TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE`.
+A `~` prefix on `MEAN` marks sub-30µs means, where instrumentation
+overhead dominates — read CALLS/TOTAL deltas there instead. Timing keys
+are module-qualified (`pkg.mod.func`), so same-named functions in
+different modules never merge into one row.
 Full reports are written to `profile-reports/profile-<timestamp>.txt` and
 `.json` regardless of `--top`.
 
@@ -109,11 +115,12 @@ where digits carry meaning (`base64.py`, `sha256.py`, `utf8.py`, ...) are
 allowed. Prints one line per violation plus a summary; exits `2` iff any
 violations.
 
-## Gate subcommands (ported from crap4dart 0.5.x–0.6.x)
+## Gate subcommands (ported from crap4dart 0.5.x–0.9.x)
 
-Seven quality-gate checks, each a standalone subcommand taking optional
+Nine quality-gate checks, each a standalone subcommand taking optional
 explicit paths (default: the normal §4-style selection — `src/` else `.`,
-test files skipped). All exit `2` iff violations, `1` on usage errors.
+test files skipped; `test-assertions` inverts this and scans test files).
+All exit `2` iff violations, `1` on usage errors.
 
 | Subcommand                | Fails when …                                                        |
 |---------------------------|---------------------------------------------------------------------|
@@ -121,9 +128,11 @@ test files skipped). All exit `2` iff violations, `1` on usage errors.
 | `class-size [paths...]`   | a class has >25 concrete methods or a complexity sum (WMC) >80.     |
 | `weight-of-class [paths…]`| a class's public data share (`self.<attr>` fields ÷ public members) >0.33. |
 | `unused-code [paths...]`  | a module-level private name (`_func`, `_x = …`) is never referenced in its module. |
-| `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py`/`__main__.py` exempt). |
+| `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py` re-exports count; `__init__.py`/`__main__.py` exempt). |
 | `banned-imports [--from GLOB --forbid GLOB [--message MSG]]... [paths...]` | a file matching `from` imports something matching `forbid` (raw dotted name or resolved project path). |
-| `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file. |
+| `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
+| `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
+| `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -197,7 +206,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -241,6 +250,8 @@ crap4py/
     unused_files.py       `unused-files` gate subcommand (never imported)
     banned_imports.py     `banned-imports` gate subcommand (import boundaries)
     magic_constants.py    `magic-constants` gate subcommand (magic literals)
+    test_assertions.py    `test-assertions` gate subcommand (assertion-free tests)
+    folder_structure.py   `folder-structure` gate subcommand (loose-file sprawl)
     imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json

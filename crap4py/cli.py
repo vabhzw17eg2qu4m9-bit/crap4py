@@ -28,6 +28,8 @@ _SUBCOMMANDS = (
     "unused-files",
     "banned-imports",
     "magic-constants",
+    "test-assertions",
+    "folder-structure",
 )
 
 _USAGE = """\
@@ -44,6 +46,8 @@ Usage:
   crap4py unused-files [path]  Check for source files never imported.
   crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
   crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
+  crap4py test-assertions [..] Flag test bodies without assertion calls.
+  crap4py folder-structure     Flag package dirs with loose .py files directly.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -147,10 +151,12 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         banned_imports,
         class_size,
         file_naming,
+        folder_structure,
         magic_constants,
         nesting,
         profile,
         skill,
+        test_assertions,
         unused_code,
         unused_files,
         weight_of_class,
@@ -167,5 +173,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "unused-files": unused_files.run,
         "banned-imports": banned_imports.run,
         "magic-constants": magic_constants.run,
+        "test-assertions": test_assertions.run,
+        "folder-structure": folder_structure.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)

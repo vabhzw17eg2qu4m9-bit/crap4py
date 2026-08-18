@@ -92,6 +92,83 @@ class RepeatedLiteralTest(unittest.TestCase):
     def test_fstring_skipped(self):
         self.assertEqual(_violations('a = f"he{x}llo"\nb = f"he{x}llo"\nc = f"he{x}llo"\n'), [])
 
+    def test_const_line_occurrences_exempt_from_duplicates_too(self):
+        msgs = _violations(
+            """
+            THEME = "brand"
+            a = "brand"
+            b = "brand"
+            """
+        )
+        self.assertEqual(msgs, [])
+
+    def test_const_initializer_subtree_fully_exempt(self):
+        msgs = _violations(
+            """
+            PALETTE = mix(0xFFFFFF, {"edge": 0x000000})
+            """
+        )
+        self.assertEqual(msgs, [])
+
+
+class IdentifierPositionTest(unittest.TestCase):
+    """Strings in identifier positions name protocol fields, not constants."""
+
+    def test_dict_key_strings_skipped(self):
+        self.assertEqual(
+            _violations(
+                """
+                a = {"theme": 1}
+                b = {"theme": 2}
+                c = {"theme": 3}
+                """
+            ),
+            [],
+        )
+
+    def test_dict_value_strings_still_counted(self):
+        msgs = _violations(
+            """
+            a = {"k": "brand"}
+            b = {"k": "brand"}
+            c = {"k": "brand"}
+            """
+        )
+        self.assertEqual(len(msgs), 3)
+
+    def test_index_expression_strings_skipped(self):
+        self.assertEqual(
+            _violations(
+                """
+                a = m["status"]
+                b = m["status"]
+                c = m["status"]
+                """
+            ),
+            [],
+        )
+
+    def test_match_case_pattern_strings_skipped(self):
+        self.assertEqual(
+            _violations(
+                """
+                def f(x):
+                    match x:
+                        case "ready":
+                            return 1
+                        case "ready":
+                            return 2
+                        case "ready":
+                            return 3
+                """
+            ),
+            [],
+        )
+
+    def test_call_argument_strings_still_counted(self):
+        msgs = _violations('a = f("brand")\nb = f("brand")\nc = f("brand")\n')
+        self.assertEqual(len(msgs), 3)
+
 
 class CheckFilesTest(unittest.TestCase):
     def setUp(self):
