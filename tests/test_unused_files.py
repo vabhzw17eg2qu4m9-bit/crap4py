@@ -63,6 +63,12 @@ class ResolveTest(unittest.TestCase):
         b = self._write("pkg/sub/b.py", "from .. import a\n")
         self.assertEqual(imported_paths(_parse(b), b.resolve(), self.root), {a.resolve()})
 
+    def test_init_reexport_counts_as_import(self):
+        """0.7.1: a package's __init__ re-exports reach implementation files."""
+        impl = self._write("pkg/impl.py", "thing = 1\n")
+        init = self._write("pkg/__init__.py", "from .impl import thing\n")
+        self.assertEqual(imported_paths(_parse(init), init.resolve(), self.root), {impl.resolve()})
+
 
 class CheckFilesTest(unittest.TestCase):
     def setUp(self):

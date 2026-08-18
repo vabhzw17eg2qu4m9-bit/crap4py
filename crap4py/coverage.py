@@ -29,7 +29,9 @@ def load_coverage(path: PathLike, project_root: PathLike | None = None) -> dict[
     p = Path(path)
     if not p.exists():
         print(
-            f"Warning: coverage file not found at {p}. Coverage will be N/A.",
+            f"Warning: coverage file not found at {p}. Coverage will be N/A.\n"
+            "Hint: generate coverage first — `coverage run -m pytest && coverage json`, "
+            "or run `crap4py --run-tests` to do it automatically.",
             file=sys.stderr,
         )
         return {}

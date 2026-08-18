@@ -76,6 +76,8 @@ class CoverageParsingTest(unittest.TestCase):
             sys.stderr = old_err
         self.assertEqual(result, {})
         self.assertIn("not found", captured)
+        self.assertIn("Hint: generate coverage first", captured)
+        self.assertIn("coverage run -m pytest && coverage json", captured)
 
 
 if __name__ == "__main__":

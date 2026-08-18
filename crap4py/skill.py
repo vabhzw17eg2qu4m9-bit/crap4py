@@ -43,7 +43,9 @@ Console columns:
 `TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE`
 
 - `TOTAL` — time across all calls; `%` — share of total profiled time
-- `MEAN` / `MAX` — average and worst single call
+- `MEAN` / `MAX` — average and worst single call; a `~` prefix marks means
+  under 30µs where instrumentation overhead dominates — trust CALLS/TOTAL
+  there (the method may have gotten cheaper)
 - `@60fps` — cost if called 60×/sec (mean × 60); a hot-loop budget proxy
 
 Full reports are saved to `profile-reports/profile-<timestamp>.txt` and
@@ -52,7 +54,10 @@ Full reports are saved to `profile-reports/profile-<timestamp>.txt` and
 ## What to Look For
 
 1. **High TOTAL + high CALLS** — called too often; cache or debounce it.
-2. **High MEAN** — a single call is expensive; algorithm/data-structure issue.
+2. **High MEAN** — a single call is expensive; algorithm/data-structure
+   issue. MEAN of a cheap-but-optimized method can APPEAR to grow after you
+   optimize everything around it: the fixed instrumentation cost weighs
+   more. Check CALLS/TOTAL deltas before concluding a regression.
 3. **High MAX >> MEAN** — occasional spikes; GC, I/O, or contention.
 
 ## How It Works

@@ -47,6 +47,25 @@ class ReportFormatTest(unittest.TestCase):
         report = format_report([_metric("m", "a.py", 2, None, None)], 8.0)
         self.assertIn("N/A", report)
 
+    def test_na_rows_ordered_by_file_across_runs(self):
+        """0.8.7 regression: N/A rows must not shuffle between runs — they
+        tie-break deterministically by file, then method name."""
+        metrics = [
+            _metric("zeta", "c.py", 2, None, None),
+            _metric("alpha", "c.py", 2, None, None),
+            _metric("mid", "a.py", 2, None, None),
+            _metric("high", "b.py", 5, 0.0, 30.0),
+        ]
+        first = format_report(metrics, 8.0)
+        second = format_report(list(reversed(metrics)), 8.0)
+        self.assertEqual(first, second)
+        rows = [
+            line.split()[0]
+            for line in first.splitlines()
+            if line.startswith(("zeta", "alpha", "mid"))
+        ]
+        self.assertEqual(rows, ["mid", "alpha", "zeta"])
+
     def test_summary_failed(self):
         report = format_report(
             [_metric("high", "b.py", 5, 0.0, 30.0), _metric("low", "a.py", 1, 1.0, 1.0)],

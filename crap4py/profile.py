@@ -91,11 +91,14 @@ def run(argv: list[str], project_root: Path) -> int:
 # --- instrumentation -----------------------------------------------------------
 
 
-def instrument_source(source: str, filename: str = "<source>") -> str:
+def instrument_source(source: str, filename: str = "<source>", module: str | None = None) -> str:
     """Wrap every function body in a timer; returns the source unchanged when
-    there is nothing to instrument."""
+    there is nothing to instrument. ``module`` prefixes timing keys (e.g.
+    ``"pkg.mod"`` → ``"pkg.mod.func"``) so same-named methods in different
+    modules never merge into one timing row.
+    """
     tree = ast.parse(source, filename=filename)
-    if not _wrap_functions(tree, prefix=None):
+    if not _wrap_functions(tree, prefix=module):
         return source
     index = _import_insert_index(tree.body)
     tree.body[index:index] = ast.parse(_IMPORTS).body
@@ -124,14 +127,16 @@ def _is_future_import(node: ast.stmt) -> bool:
 
 
 def _wrap_functions(node: ast.AST, prefix: str | None) -> bool:
-    """Wrap each descendant function body; key = qualified name (complexity rules)."""
+    """Wrap each descendant function body; key = qualified name (complexity
+    rules), nested under the fully qualified parent (``mod.run.inner``)."""
     wrapped = False
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.ClassDef):
             wrapped = _wrap_functions(child, _qualified(prefix, child.name)) or wrapped
         elif isinstance(child, _FUNCTION_TYPES):
-            _wrap_functions(child, child.name)
-            child.body = _wrapped_body(_qualified(prefix, child.name), child.body)
+            qualified = _qualified(prefix, child.name)
+            _wrap_functions(child, qualified)
+            child.body = _wrapped_body(qualified, child.body)
             wrapped = True
     return wrapped
 
@@ -175,8 +180,17 @@ def _instrument_files(files: list[Path], project_root: Path, temp_dir: Path) -> 
         target = temp_dir / rel
         if target.is_file():
             source = Path(file_path).read_text(encoding="utf-8")
-            target.write_text(instrument_source(source, str(file_path)), encoding="utf-8")
+            target.write_text(
+                instrument_source(source, str(file_path), _module_prefix(rel)),
+                encoding="utf-8",
+            )
     (temp_dir / _COLLECTOR_NAME).write_text(COLLECTOR_SOURCE, encoding="utf-8")
+
+
+def _module_prefix(rel: Path) -> str:
+    """Dotted module path of a project-relative file (``pkg/sub/mod.py`` →
+    ``pkg.sub.mod``); prefixes timing keys so cross-module names stay apart."""
+    return rel.with_suffix("").as_posix().replace("/", ".")
 
 
 def _run_tests(temp_dir: Path, name: str | None) -> None:
@@ -265,14 +279,19 @@ def format_report(entries: list[ProfileEntry], top: int | None, threshold_ms: fl
 
 
 def _method_locations(files: list[Path], project_root: Path) -> dict[str, tuple[str, int]]:
-    """Inventory: qualified method name -> (relative file, start line), first match wins."""
+    """Inventory: module-qualified method name -> (relative file, start line).
+
+    Keys carry the module prefix (``pkg.mod.func``) exactly like the
+    instrumented ``record()`` calls, so same-named methods in different
+    modules attribute unambiguously.
+    """
     locations: dict[str, tuple[str, int]] = {}
     for file_path in files:
         source = Path(file_path).read_text(encoding="utf-8")
+        rel = _relative_to_root(Path(file_path), project_root)
+        prefix = _module_prefix(Path(rel))
         for desc in extract_methods(source, filename=str(file_path)):
-            locations.setdefault(
-                desc.name, (_relative_to_root(Path(file_path), project_root), desc.start_line)
-            )
+            locations.setdefault(f"{prefix}.{desc.name}", (rel, desc.start_line))
     return locations
 
 
@@ -291,11 +310,18 @@ def _entry(key: str, loc: tuple[str, int], stats: dict) -> ProfileEntry:
 
 def _format_row(entry: ProfileEntry, total_micros: float) -> str:
     pct = entry.total_micros / total_micros * 100.0 if total_micros else 0.0
+    mean = _format_mean(entry.mean_micros)
     return (
         f"{entry.total_micros / 1000:>9.2f} {pct:>6.1f}% {entry.calls:>6} "
-        f"{entry.mean_micros:>9.1f} {int(entry.max_micros):>8} "
+        f"{mean:>9} {int(entry.max_micros):>8} "
         f"{entry.mean_micros * 60 / 1000:>10.2f}  {entry.method:<24} {entry.file}:{entry.line}"
     )
+
+
+def _format_mean(mean_micros: float) -> str:
+    """Mean with one decimal; ``~`` marks sub-30µs means where instrumentation
+    overhead dominates (read CALLS/TOTAL deltas there instead — 0.9.2)."""
+    return f"~{mean_micros:.1f}" if mean_micros < 30 else f"{mean_micros:.1f}"
 
 
 def _threshold_line(entries: list[ProfileEntry], threshold_ms: float) -> str:
@@ -365,7 +391,8 @@ def _build_parser() -> UsageErrorParser:
 
 
 # Source of the collector module injected into the instrumented copy.
-# Multiple test processes merge into one file via atomic rename on flush.
+# Multiple test processes merge into one file via atomic rename on flush;
+# temp names carry the pid so parallel workers never collide (0.9.2).
 COLLECTOR_SOURCE = '''\
 """Injected profiling collector (generated by `crap4py profile` — do not edit)."""
 
@@ -375,9 +402,11 @@ import os
 import time
 
 _STATS = {}
+_CALLS = 0
 
 
 def record(key, micros):
+    global _CALLS
     s = _STATS.get(key)
     if s is None:
         s = _STATS[key] = {
@@ -388,6 +417,10 @@ def record(key, micros):
     if s["minMicros"] is None or micros < s["minMicros"]:
         s["minMicros"] = micros
     s["maxMicros"] = max(s["maxMicros"], micros)
+    # Flush every 5 records: a crashed worker keeps everything it flushed.
+    _CALLS += 1
+    if _CALLS % 5 == 0:
+        flush()
 
 
 def flush():
@@ -397,15 +430,18 @@ def flush():
     data = _load(path)
     for key, s in _STATS.items():
         _merge_entry(data, key, s)
-    _atomic_write(path, data)
+    if _atomic_write(path, data):
+        _STATS.clear()
 
 
 def _load(path):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    for _ in range(2):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            continue  # torn read racing another worker's rename — retry once
+    return {}
 
 
 def _merge_entry(data, key, s):
@@ -427,7 +463,8 @@ def _atomic_write(path, data):
             json.dump(data, fh)
         os.replace(tmp, path)
     except OSError:
-        pass  # best effort
+        return False  # best effort — unflushed records stay for the next flush
+    return True
 
 
 atexit.register(flush)

@@ -11,6 +11,7 @@ from crap4py.files import (
     changed_files,
     expand_paths,
     find_source_files,
+    find_test_files,
 )
 
 
@@ -37,6 +38,19 @@ class FindSourceFilesTest(_TempRoot):
         self._write("a.py")
         self._write("b.py")
         self.assertEqual(len(find_source_files(self.root)), 2)
+
+
+class FindTestFilesTest(_TempRoot):
+    def test_collects_test_files_only(self):
+        t1 = self._write("tests/test_mod.py")
+        t2 = self._write("test_root.py")
+        helper = self._write("tests/helper.py")  # under a test dir → test file
+        self._write("mod.py")
+        self.assertEqual(find_test_files(self.root), sorted([t1, t2, helper]))
+
+    def test_skips_excluded_dirs(self):
+        self._write(".venv/pkg/tests/test_x.py")
+        self.assertEqual(find_test_files(self.root), [])
 
 
 class ExpandPathsTest(_TempRoot):
