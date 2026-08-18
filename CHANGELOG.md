@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.4.0...v0.5.0) (2026-08-18)
+
+
+### Features
+
+* port crap4dart 0.7-0.9 fixes and gates as subcommands ([#16](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/16)) ([877065f](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/877065f67a5c5071f6f7317065739e1e2c3757a4))
+
 ## [0.4.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.3.0...v0.4.0) (2026-08-15)
 
 
