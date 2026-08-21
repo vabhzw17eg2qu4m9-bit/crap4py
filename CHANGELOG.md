@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.5.0...v0.5.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* port crap4dart 0.9.3/0.9.4 profile and test-assertions fixes ([#18](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/18)) ([c4d4b77](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/c4d4b77591d89877e510b2d96127bac368f3e096))
+
 ## [0.5.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.4.0...v0.5.0) (2026-08-18)
 
 
