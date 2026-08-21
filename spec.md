@@ -425,6 +425,16 @@ the selected set; module-qualified keys above make its inventory
 unambiguous). Upstream's flutter_test pending-timer workaround (no 1s
 flush timer) has no Python analog — flushing rides `atexit`.
 
+The 0.9.3 fix (explicit test paths must be the *only* selectors — the
+default `test` directory selector, appended unconditionally upstream, made
+an explicit-path run profile the whole suite too) needs no port: the
+port's paths never enter the test-runner argv, which is always exactly
+the pytest/unittest subcommand plus an optional `-k` filter — there is no
+default selector to mix in, and the default §4 source selection applies
+only when no paths are given. Regression-pinned: the runner argv is
+byte-exact with and without `--name`, and an explicit-path run reports
+only that file's methods.
+
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
 
@@ -457,6 +467,15 @@ Output: `<file>:<line>: '<Class.test_name>' has 0 assertion(s) — a test
 without assertions verifies nothing` plus a summary (`N/M tests without
 assertions` / `M tests assert their expectations`). Exit `2` iff
 violations, `1` on usage errors.
+
+The 0.9.4 fix (the body is the *second positional* argument of Dart's
+`test(...)`, not the last — trailing `skip:`/`timeout:` named args were
+mistaken for the body) has no Python analog: unittest/pytest tests are
+`def` bodies, never call arguments, and skip metadata arrives as
+decorators (`@unittest.skip`, `@pytest.mark.skip`) that sit outside the
+body the gate counts. Regression-pinned: skip-decorated tests are still
+counted for their real body — the empty variant is flagged, the asserting
+variant passes.
 
 ## 22. `folder-structure`
 

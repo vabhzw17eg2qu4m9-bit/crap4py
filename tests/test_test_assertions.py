@@ -66,6 +66,43 @@ class TestCandidatesTest(unittest.TestCase):
         self.assertEqual(_counts("async def test_async():\n    assert True\n"), {"test_async": 1})
 
 
+class SkipMetadataTest(unittest.TestCase):
+    """crap4dart 0.9.4 regression, Python shape: skip metadata must not hide
+    the test body. Dart appends it as trailing named args (``skip:``), Python
+    as decorators — either way the real body is still counted."""
+
+    def test_unittest_skip_decorator_does_not_hide_body(self):
+        counts = _counts(
+            """
+            class T(unittest.TestCase):
+                @unittest.skip("later")
+                def test_skipped_but_empty(self):
+                    print("nothing asserted")
+
+                @unittest.skip("later")
+                def test_asserted_despite_skip(self):
+                    self.assertEqual(1 + 1, 2)
+            """
+        )
+        self.assertEqual(counts["T.test_skipped_but_empty"], 0)
+        self.assertEqual(counts["T.test_asserted_despite_skip"], 1)
+
+    def test_pytest_mark_skip_does_not_hide_body(self):
+        counts = _counts(
+            """
+            @pytest.mark.skip(reason="later")
+            def test_skipped_but_empty():
+                print("nothing asserted")
+
+            @pytest.mark.skipif(False, reason="later")
+            def test_asserted_despite_skip():
+                assert 1 + 1 == 2
+            """
+        )
+        self.assertEqual(counts["test_skipped_but_empty"], 0)
+        self.assertEqual(counts["test_asserted_despite_skip"], 1)
+
+
 class CheckFilesTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,6 +247,38 @@ class PythonpathTest(unittest.TestCase):
             self.assertEqual(pp, os.pathsep.join([str(root), str(root / "src")]))
 
 
+class TestCommandsTest(unittest.TestCase):
+    """crap4dart 0.9.3 regression: explicit paths must be the only selectors —
+    a default whole-suite selector appended beside them profiled everything.
+    In this port the positional paths select sources to instrument and never
+    enter the runner argv, so the argv must be exactly the subcommand plus
+    an optional ``-k`` filter."""
+
+    def _commands(self, name):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            return profile._test_commands(root, name)
+
+    def test_argv_is_exactly_subcommand_without_name(self):
+        self.assertEqual(
+            self._commands(None),
+            [
+                [sys.executable, "-m", "pytest", "-q"],
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            ],
+        )
+
+    def test_argv_is_exactly_subcommand_with_name_filter(self):
+        self.assertEqual(
+            self._commands("golden"),
+            [
+                [sys.executable, "-m", "pytest", "-q", "-k", "golden"],
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-k", "golden"],
+            ],
+        )
+
+
 class EndToEndTest(unittest.TestCase):
     """Runs a real instrumented pytest pass over a tiny fixture project."""
 
@@ -293,6 +326,19 @@ class EndToEndTest(unittest.TestCase):
         code, out = self._run()
         self.assertEqual(code, 0)
         self.assertIn("No Python files to profile", out)
+
+    def test_explicit_paths_profile_only_those_files(self):
+        (self.root / "other.py").write_text("def hello():\n    return 'hi'\n", encoding="utf-8")
+        (self.root / "tests" / "test_other.py").write_text(
+            "import unittest\n\nimport other\n\n\nclass OtherTest(unittest.TestCase):\n"
+            "    def test_hello(self):\n        self.assertEqual(other.hello(), 'hi')\n",
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, out = self._run("other.py")
+        self.assertEqual(code, 0)
+        self.assertIn("other.hello", out)
+        self.assertNotIn("calc.add", out, "explicit paths must not profile the whole project")
 
 
 class FailingTestsTest(unittest.TestCase):
