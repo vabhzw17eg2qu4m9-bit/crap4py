@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from crap4py.profile import (
     COLLECTOR_SOURCE,
     attribute,
     collect_timings,
+    fmt_total,
     format_report,
     instrument_source,
 )
@@ -24,9 +27,9 @@ class InstrumentSourceTest(unittest.TestCase):
     def test_wraps_function_body(self):
         src = "def add(a, b):\n    return a + b\n"
         out = instrument_source(src)
-        self.assertIn("__crap_t0 = __crap_pc()", out)
+        self.assertIn("__crap_cc.enter('add')", out)
         self.assertIn("finally:", out)
-        self.assertIn("__crap_cc.record('add'", out)
+        self.assertIn("__crap_cc.exit('add')", out)
         self.assertIn("import _crap_collector", out)
         compile(out, "<instrumented>", "exec")  # must be valid Python
 
@@ -48,9 +51,9 @@ class InstrumentSourceTest(unittest.TestCase):
         )
         out = instrument_source(src)
         compile(out, "<instrumented>", "exec")
-        self.assertIn("__crap_cc.record('Foo.bar'", out)
-        self.assertIn("__crap_cc.record('top'", out)
-        self.assertIn("__crap_cc.record('top.inner'", out)
+        self.assertIn("__crap_cc.enter('Foo.bar'", out)
+        self.assertIn("__crap_cc.enter('top'", out)
+        self.assertIn("__crap_cc.enter('top.inner'", out)
 
     def test_yield_and_raise_bodies_still_valid(self):
         src = "def gen():\n    yield 1\n\n\ndef boom():\n    raise ValueError('x')\n"
@@ -68,7 +71,7 @@ class InstrumentSourceTest(unittest.TestCase):
         keys = [
             node.args[0].value
             for node in ast.walk(ast.parse(instrumented))
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "record"
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "enter"
         ]
         self.assertEqual(keys, ["Foo.bar"])
 
@@ -83,6 +86,20 @@ class InstrumentSourceTest(unittest.TestCase):
         self.assertLess(out.index("__future__"), out.index("_crap_collector"))
 
 
+class FakeClock:
+    """Controllable ``perf_counter`` stand-in for deterministic frame math."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def perf_counter(self):
+        return self.now
+
+    def __getattr__(self, name):
+        # time_ns and friends stay real; only perf_counter is controlled.
+        return getattr(time, name)
+
+
 class CollectorTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -90,53 +107,135 @@ class CollectorTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.out = self.root / "timings.json"
 
-    def _collector(self):
+    def _collector(self, clock=None):
         namespace: dict = {"__name__": "_crap_collector_test"}
         exec(COLLECTOR_SOURCE, namespace)  # noqa: S102 - testing generated code
+        if clock is not None:
+            # After exec: the collector's own `import time` runs during exec.
+            namespace["time"] = clock
         return namespace
 
-    def test_record_and_flush_aggregate(self):
+    def _call(self, ns, clock, key, micros):
+        ns["enter"](key)
+        clock.now += micros / 1e6
+        ns["exit"](key)
+
+    def test_enter_exit_and_flush_aggregate(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
         self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
-        ns = self._collector()
-        ns["record"]("a", 100.0)
-        ns["record"]("a", 300.0)
-        ns["record"]("b", 50.0)
+        clock = FakeClock()
+        ns = self._collector(clock)
+        self._call(ns, clock, "a", 100.0)
+        self._call(ns, clock, "a", 300.0)
+        self._call(ns, clock, "b", 50.0)
         ns["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 2)
-        self.assertEqual(data["a"]["totalMicros"], 400.0)
-        self.assertEqual(data["a"]["minMicros"], 100.0)
-        self.assertEqual(data["a"]["maxMicros"], 300.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["totalSelfMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
+        self.assertAlmostEqual(data["a"]["maxMicros"], 300.0)
         self.assertEqual(data["b"]["calls"], 1)
 
     def test_flush_merges_across_instances(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
         self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
-        first, second = self._collector(), self._collector()
-        first["record"]("a", 100.0)
+        clock = FakeClock()
+        first, second = self._collector(clock), self._collector(clock)
+        self._call(first, clock, "a", 100.0)
         first["flush"]()
-        second["record"]("a", 400.0)
+        self._call(second, clock, "a", 400.0)
         second["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 2)
-        self.assertEqual(data["a"]["totalMicros"], 500.0)
-        self.assertEqual(data["a"]["minMicros"], 100.0)
-        self.assertEqual(data["a"]["maxMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 500.0)
+        self.assertAlmostEqual(data["a"]["totalSelfMicros"], 500.0)
+        self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
+        self.assertAlmostEqual(data["a"]["maxMicros"], 400.0)
 
     def test_auto_flush_every_5_records_without_double_counting(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
         self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
-        ns = self._collector()
+        clock = FakeClock()
+        ns = self._collector(clock)
         for _ in range(5):
-            ns["record"]("a", 10.0)
+            self._call(ns, clock, "a", 10.0)
         self.assertTrue(self.out.exists(), "5th record must flush")
         for _ in range(3):
-            ns["record"]("a", 10.0)
+            self._call(ns, clock, "a", 10.0)
         ns["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 8)
-        self.assertEqual(data["a"]["totalMicros"], 80.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 80.0)
+
+    def test_nested_self_time_excludes_inner_call(self):
+        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        clock = FakeClock()
+        ns = self._collector(clock)
+        ns["enter"]("outer")
+        ns["enter"]("inner")
+        clock.now += 200.0 / 1e6
+        ns["exit"]("inner")
+        clock.now += 800.0 / 1e6
+        ns["exit"]("outer")
+        ns["flush"]()
+        data = json.loads(self.out.read_text(encoding="utf-8"))
+        outer, inner = data["outer"], data["inner"]
+        # perf_counter round-trips through /1e6 *1e6, so compare with a
+        # float tolerance — only the *relations* are exact.
+        self.assertAlmostEqual(outer["totalMicros"], 1000.0)  # inclusive
+        self.assertAlmostEqual(outer["totalSelfMicros"], 800.0)  # minus nested
+        self.assertAlmostEqual(inner["totalMicros"], 200.0)
+        self.assertAlmostEqual(inner["totalSelfMicros"], 200.0)
+        # Upstream invariants: nested call is contained in the parent's
+        # inclusive time; self time is non-negative on both levels.
+        self.assertGreaterEqual(outer["totalMicros"], inner["totalMicros"])
+        self.assertLessEqual(outer["totalSelfMicros"], outer["totalMicros"] - inner["totalMicros"])
+        self.assertGreaterEqual(outer["totalSelfMicros"], 0)
+        self.assertGreaterEqual(inner["totalSelfMicros"], 0)
+
+    def test_threaded_frames_do_not_cross_contaminate(self):
+        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        ns = self._collector()
+        rounds = 25
+        barrier = threading.Barrier(2)
+
+        def work(outer, inner):
+            barrier.wait()
+            for _ in range(rounds):
+                ns["enter"](outer)
+                ns["enter"](inner)
+                time.sleep(0.0002)
+                ns["exit"](inner)
+                time.sleep(0.0002)
+                ns["exit"](outer)
+
+        threads = [
+            threading.Thread(target=work, args=("ta.outer", "ta.inner")),
+            threading.Thread(target=work, args=("tb.outer", "tb.inner")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        ns["flush"]()
+        data = json.loads(self.out.read_text(encoding="utf-8"))
+        for prefix in ("ta", "tb"):
+            outer, inner = data[f"{prefix}.outer"], data[f"{prefix}.inner"]
+            self.assertEqual(outer["calls"], rounds)
+            self.assertEqual(inner["calls"], rounds)
+            # Real timers accumulate ±ulp float noise across 25 rounds
+            # (upstream's Dart ints don't) — compare with 1µs slack; real
+            # frame corruption errs by whole calls, not by ulps.
+            slack = 1.0
+            self.assertGreaterEqual(outer["totalMicros"], inner["totalMicros"] - slack)
+            self.assertLessEqual(
+                outer["totalSelfMicros"],
+                outer["totalMicros"] - inner["totalMicros"] + slack,
+            )
+            self.assertGreaterEqual(inner["totalSelfMicros"], 0)
 
 
 class AttributeAndReportTest(unittest.TestCase):
@@ -152,6 +251,7 @@ class AttributeAndReportTest(unittest.TestCase):
             line=1,
             calls=2,
             total_micros=3000.0,
+            self_micros=1500.0,
             min_micros=1000.0,
             max_micros=2000.0,
         )
@@ -186,7 +286,7 @@ class AttributeAndReportTest(unittest.TestCase):
         keys = [
             node.args[0].value
             for node in ast.walk(ast.parse(instrumented))
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "record"
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "enter"
         ]
         path = self.root / "pkg" / "mod.py"
         path.parent.mkdir(exist_ok=True)
@@ -201,11 +301,15 @@ class AttributeAndReportTest(unittest.TestCase):
             self._entry(method="fast", total_micros=1000.0, calls=1),
         ]
         report = format_report(entries, top=20, threshold_ms=None)
-        self.assertIn("TOTAL(ms)", report)
+        self.assertIn("TOTAL", report)
+        self.assertIn("SELF", report)
         self.assertIn("@60fps(ms)", report)
         self.assertIn("FILE:LINE", report)
         self.assertLess(report.index("slow"), report.index("fast"))
         self.assertIn("2 methods, total 10.00ms", report)
+        slow_row = next(line for line in report.splitlines() if "slow" in line)
+        self.assertIn("9.00ms", slow_row)
+        self.assertIn("1.50ms", slow_row)  # default self_micros
 
     def test_threshold_lines(self):
         entries = [self._entry(total_micros=5000.0)]
@@ -229,6 +333,49 @@ class AttributeAndReportTest(unittest.TestCase):
         self.assertIn("m4", report)
         self.assertIn("m3", report)
         self.assertNotIn("m2 ", report)
+
+    def test_adaptive_units_keep_huge_totals_compact(self):
+        # Tens of billions of calls used to render TOTAL as a wall of
+        # digits (e.g. 50000000.00) — adaptive units keep columns compact.
+        entries = [
+            self._entry(
+                method="hot",
+                calls=25_000_000_000,
+                total_micros=5.0e10,
+                self_micros=2.0e10,
+            ),
+            self._entry(method="mid", total_micros=2_500_000.0, self_micros=1_000_000.0),
+            self._entry(method="long", total_micros=1_800_000_000.0, self_micros=1_350_000_000.0),
+        ]
+        report = format_report(entries, top=20, threshold_ms=None)
+        self.assertIn("13.89h", report)  # 5e7 ms total — hours tier
+        self.assertIn(f"total {fmt_total(sum(e.total_micros for e in entries) / 1000)}", report)
+        self.assertIn("5.56h", report)  # 2e7 ms self
+        self.assertIn("2.50s", report)  # 2500 ms — seconds tier
+        self.assertIn("30.00m", report)  # 1.8e6 ms total — minutes tier
+        self.assertIn("22.50m", report)  # minutes-tier self
+        self.assertNotIn("50000000.00", report)
+
+
+class FmtTotalTest(unittest.TestCase):
+    """Adaptive-unit tiers with their exact boundaries (0.9.5)."""
+
+    def test_millisecond_tier(self):
+        self.assertEqual(fmt_total(0.0), "0.00ms")
+        self.assertEqual(fmt_total(82.5), "82.50ms")
+        self.assertEqual(fmt_total(999.99), "999.99ms")
+
+    def test_second_tier_boundary_at_1000(self):
+        self.assertEqual(fmt_total(1000.0), "1.00s")
+        self.assertEqual(fmt_total(13_890.0), "13.89s")
+
+    def test_minute_tier_boundary_at_60000(self):
+        self.assertEqual(fmt_total(60_000.0), "1.00m")
+        self.assertEqual(fmt_total(1_350_000.0), "22.50m")
+
+    def test_hour_tier_boundary_at_3600000(self):
+        self.assertEqual(fmt_total(3_600_000.0), "1.00h")
+        self.assertEqual(fmt_total(50_000_000.0), "13.89h")
 
 
 class LoadTimingsTest(unittest.TestCase):

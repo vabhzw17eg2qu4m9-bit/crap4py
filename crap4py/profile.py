@@ -1,9 +1,10 @@
 """``profile`` subcommand: source-instrumentation profiler.
 
-Copies the project to a temp dir, wraps every function/method body in
-``time.perf_counter()`` + ``try/finally`` (stdlib ``ast``), injects a
-collector module, runs the test suite against the instrumented copy, and
-reports per-function timing. Port of the crap4dart profiler.
+Copies the project to a temp dir, reports method entry/exit for every
+function/method body to an injected collector (stdlib ``ast``), runs the
+test suite against the instrumented copy, and reports per-function timing
+(inclusive TOTAL plus SELF — inclusive minus nested instrumented calls).
+Port of the crap4dart profiler.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .files import expand_paths, find_source_files
 _OUTPUT_NAME = ".crap_profile.json"
 _REPORTS_DIR = "profile-reports"
 _COLLECTOR_NAME = "_crap_collector.py"
-_IMPORTS = "from time import perf_counter as __crap_pc\nimport _crap_collector as __crap_cc\n"
+_IMPORTS = "import _crap_collector as __crap_cc\n"
 
 _COPY_IGNORE = shutil.ignore_patterns(
     ".git",
@@ -44,7 +45,7 @@ _COPY_IGNORE = shutil.ignore_patterns(
 )
 
 _PROFILE_HEADER = (
-    f"{'TOTAL(ms)':>9} {'%':>7} {'CALLS':>6} {'MEAN(µs)':>9} "
+    f"{'TOTAL':>9} {'SELF':>9} {'%':>7} {'CALLS':>6} {'MEAN(µs)':>9} "
     f"{'MAX(µs)':>8} {'@60fps(ms)':>10}  {'METHOD':<24} FILE:LINE"
 )
 
@@ -58,6 +59,7 @@ class ProfileEntry:
     line: int
     calls: int
     total_micros: float
+    self_micros: float
     min_micros: float
     max_micros: float
 
@@ -142,10 +144,12 @@ def _wrap_functions(node: ast.AST, prefix: str | None) -> bool:
 
 
 def _wrapped_body(key: str, body: list[ast.stmt]) -> list[ast.stmt]:
-    """``t0 = pc(); try: <body> finally: record(key, (pc() - t0) * 1e6)``."""
-    start = ast.parse("__crap_t0 = __crap_pc()").body[0]
-    record = ast.parse(f"__crap_cc.record({key!r}, (__crap_pc() - __crap_t0) * 1e6)").body[0]
-    return [start, ast.Try(body=list(body), handlers=[], orelse=[], finalbody=[record])]
+    """``__crap_cc.enter(key); try: <body> finally: __crap_cc.exit(key)`` —
+    the collector owns per-call timers on its call stack, so it can report
+    self time (inclusive minus nested instrumented calls)."""
+    enter = ast.parse(f"__crap_cc.enter({key!r})").body[0]
+    exit_ = ast.parse(f"__crap_cc.exit({key!r})").body[0]
+    return [enter, ast.Try(body=list(body), handlers=[], orelse=[], finalbody=[exit_])]
 
 
 # --- instrumented run ----------------------------------------------------------
@@ -266,7 +270,7 @@ def format_report(entries: list[ProfileEntry], top: int | None, threshold_ms: fl
     """Console table sorted by TOTAL desc, limited to ``top`` rows."""
     total = sum(e.total_micros for e in entries)
     lines = [
-        f"Profile Report ({len(entries)} methods, total {total / 1000:.2f}ms)",
+        f"Profile Report ({len(entries)} methods, total {fmt_total(total / 1000)})",
         _PROFILE_HEADER,
     ]
     ordered = sorted(entries, key=lambda e: -e.total_micros)
@@ -303,6 +307,7 @@ def _entry(key: str, loc: tuple[str, int], stats: dict) -> ProfileEntry:
         line=line,
         calls=int(stats.get("calls", 0)),
         total_micros=float(stats.get("totalMicros", 0.0)),
+        self_micros=float(stats.get("totalSelfMicros", 0.0)),
         min_micros=float(stats.get("minMicros") or 0.0),
         max_micros=float(stats.get("maxMicros", 0.0)),
     )
@@ -312,7 +317,8 @@ def _format_row(entry: ProfileEntry, total_micros: float) -> str:
     pct = entry.total_micros / total_micros * 100.0 if total_micros else 0.0
     mean = _format_mean(entry.mean_micros)
     return (
-        f"{entry.total_micros / 1000:>9.2f} {pct:>6.1f}% {entry.calls:>6} "
+        f"{fmt_total(entry.total_micros / 1000):>9} {fmt_total(entry.self_micros / 1000):>9} "
+        f"{pct:>6.1f}% {entry.calls:>6} "
         f"{mean:>9} {int(entry.max_micros):>8} "
         f"{entry.mean_micros * 60 / 1000:>10.2f}  {entry.method:<24} {entry.file}:{entry.line}"
     )
@@ -322,6 +328,20 @@ def _format_mean(mean_micros: float) -> str:
     """Mean with one decimal; ``~`` marks sub-30µs means where instrumentation
     overhead dominates (read CALLS/TOTAL deltas there instead — 0.9.2)."""
     return f"~{mean_micros:.1f}" if mean_micros < 30 else f"{mean_micros:.1f}"
+
+
+def fmt_total(millis: float) -> str:
+    """TOTAL/SELF with adaptive units: at extreme call counts a plain
+    ``.2f`` renders walls of digits that blow the column width up — unit
+    suffixes (``82.50ms``, ``13.89s``, ``22.50m``, ``13.89h``) stay compact
+    at any magnitude (0.9.5)."""
+    if millis < 1000:
+        return f"{millis:.2f}ms"
+    if millis < 60000:
+        return f"{millis / 1000:.2f}s"
+    if millis < 3600000:
+        return f"{millis / 60000:.2f}m"
+    return f"{millis / 3600000:.2f}h"
 
 
 def _threshold_line(entries: list[ProfileEntry], threshold_ms: float) -> str:
@@ -365,6 +385,7 @@ def _entry_dict(entry: ProfileEntry) -> dict:
         "line": entry.line,
         "calls": entry.calls,
         "totalMicros": entry.total_micros,
+        "totalSelfMicros": entry.self_micros,
         "minMicros": entry.min_micros,
         "maxMicros": entry.max_micros,
     }
@@ -399,39 +420,75 @@ COLLECTOR_SOURCE = '''\
 import atexit
 import json
 import os
+import threading
 import time
 
 _STATS = {}
 _CALLS = 0
+# One call stack per thread: concurrent test threads must not interleave
+# frames (Dart keeps one global stack — its runs are single-threaded).
+_LOCAL = threading.local()
+# Threads share _STATS and the output file; Dart runs single-threaded, so
+# its collector needs no lock. Python tests routinely use threads.
+_LOCK = threading.Lock()
 
 
-def record(key, micros):
+def _stack():
+    try:
+        return _LOCAL.frames
+    except AttributeError:
+        _LOCAL.frames = []
+        return _LOCAL.frames
+
+
+def enter(key):
+    _stack().append({"key": key, "start": time.perf_counter(), "child": 0.0})
+
+
+def exit(key):
+    """Records inclusive time for the call and self time (inclusive minus
+    nested instrumented calls that completed while the frame was open)."""
     global _CALLS
-    s = _STATS.get(key)
-    if s is None:
-        s = _STATS[key] = {
-            "calls": 0, "totalMicros": 0.0, "minMicros": None, "maxMicros": 0.0,
-        }
-    s["calls"] += 1
-    s["totalMicros"] += micros
-    if s["minMicros"] is None or micros < s["minMicros"]:
-        s["minMicros"] = micros
-    s["maxMicros"] = max(s["maxMicros"], micros)
-    # Flush every 5 records: a crashed worker keeps everything it flushed.
-    _CALLS += 1
-    if _CALLS % 5 == 0:
+    stack = _stack()
+    if not stack:
+        return
+    frame = stack.pop()
+    inclusive = (time.perf_counter() - frame["start"]) * 1e6
+    self_micros = max(0.0, inclusive - frame["child"])
+    if stack:
+        stack[-1]["child"] += inclusive
+    with _LOCK:
+        s = _STATS.get(key)
+        if s is None:
+            s = _STATS[key] = {
+                "calls": 0, "totalMicros": 0.0, "totalSelfMicros": 0.0,
+                "minMicros": None, "maxMicros": 0.0,
+            }
+        s["calls"] += 1
+        s["totalMicros"] += inclusive
+        s["totalSelfMicros"] += self_micros
+        if s["minMicros"] is None or inclusive < s["minMicros"]:
+            s["minMicros"] = inclusive
+        s["maxMicros"] = max(s["maxMicros"], inclusive)
+        # Flush every 5 records: a crashed worker keeps everything it flushed.
+        _CALLS += 1
+        due = _CALLS % 5 == 0
+    if due:
         flush()
 
 
 def flush():
-    path = os.environ.get("CRAP_PROFILE_OUTPUT")
-    if not path or not _STATS:
-        return
-    data = _load(path)
-    for key, s in _STATS.items():
-        _merge_entry(data, key, s)
-    if _atomic_write(path, data):
-        _STATS.clear()
+    # Lock spans read-merge-write so concurrent threads (or the atexit hook
+    # racing the every-5 flush) never overwrite each other's deltas.
+    with _LOCK:
+        path = os.environ.get("CRAP_PROFILE_OUTPUT")
+        if not path or not _STATS:
+            return
+        data = _load(path)
+        for key, s in _STATS.items():
+            _merge_entry(data, key, s)
+        if _atomic_write(path, data):
+            _STATS.clear()
 
 
 def _load(path):
@@ -446,10 +503,12 @@ def _load(path):
 
 def _merge_entry(data, key, s):
     ex = data.setdefault(key, {
-        "calls": 0, "totalMicros": 0.0, "minMicros": None, "maxMicros": 0.0,
+        "calls": 0, "totalMicros": 0.0, "totalSelfMicros": 0.0,
+        "minMicros": None, "maxMicros": 0.0,
     })
     ex["calls"] += s["calls"]
     ex["totalMicros"] += s["totalMicros"]
+    ex["totalSelfMicros"] += s["totalSelfMicros"]
     if s["minMicros"] is not None:
         ex["minMicros"] = s["minMicros"] if ex["minMicros"] is None else min(
             ex["minMicros"], s["minMicros"])
