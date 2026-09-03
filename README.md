@@ -279,8 +279,10 @@ crap4py/
 ## Development
 
 A checked-in pre-commit hook runs `crap4py` with its 8.0 threshold on staged
-`.py` files and blocks the commit if any exceeds it. Enable it once after
-cloning:
+`.py` files, printing the report and blocking the commit when any function
+exceeds the threshold — or when the check could not run at all. If crap4py is
+not importable by either `python3` or `python`, it warns and lets the commit
+through. Enable it once after cloning:
 
 ```bash
 git config core.hooksPath githooks
