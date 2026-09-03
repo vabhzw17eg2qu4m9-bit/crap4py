@@ -131,10 +131,10 @@ class CollectorTest(unittest.TestCase):
         ns["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 2)
-        self.assertEqual(data["a"]["totalMicros"], 400.0)
-        self.assertEqual(data["a"]["totalSelfMicros"], 400.0)
-        self.assertEqual(data["a"]["minMicros"], 100.0)
-        self.assertEqual(data["a"]["maxMicros"], 300.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["totalSelfMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
+        self.assertAlmostEqual(data["a"]["maxMicros"], 300.0)
         self.assertEqual(data["b"]["calls"], 1)
 
     def test_flush_merges_across_instances(self):
@@ -148,10 +148,10 @@ class CollectorTest(unittest.TestCase):
         second["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 2)
-        self.assertEqual(data["a"]["totalMicros"], 500.0)
-        self.assertEqual(data["a"]["totalSelfMicros"], 500.0)
-        self.assertEqual(data["a"]["minMicros"], 100.0)
-        self.assertEqual(data["a"]["maxMicros"], 400.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 500.0)
+        self.assertAlmostEqual(data["a"]["totalSelfMicros"], 500.0)
+        self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
+        self.assertAlmostEqual(data["a"]["maxMicros"], 400.0)
 
     def test_auto_flush_every_5_records_without_double_counting(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
@@ -166,7 +166,7 @@ class CollectorTest(unittest.TestCase):
         ns["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(data["a"]["calls"], 8)
-        self.assertEqual(data["a"]["totalMicros"], 80.0)
+        self.assertAlmostEqual(data["a"]["totalMicros"], 80.0)
 
     def test_nested_self_time_excludes_inner_call(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
@@ -182,10 +182,12 @@ class CollectorTest(unittest.TestCase):
         ns["flush"]()
         data = json.loads(self.out.read_text(encoding="utf-8"))
         outer, inner = data["outer"], data["inner"]
-        self.assertEqual(outer["totalMicros"], 1000.0)  # inclusive
-        self.assertEqual(outer["totalSelfMicros"], 800.0)  # minus nested
-        self.assertEqual(inner["totalMicros"], 200.0)
-        self.assertEqual(inner["totalSelfMicros"], 200.0)
+        # perf_counter round-trips through /1e6 *1e6, so compare with a
+        # float tolerance — only the *relations* are exact.
+        self.assertAlmostEqual(outer["totalMicros"], 1000.0)  # inclusive
+        self.assertAlmostEqual(outer["totalSelfMicros"], 800.0)  # minus nested
+        self.assertAlmostEqual(inner["totalMicros"], 200.0)
+        self.assertAlmostEqual(inner["totalSelfMicros"], 200.0)
         # Upstream invariants: nested call is contained in the parent's
         # inclusive time; self time is non-negative on both levels.
         self.assertGreaterEqual(outer["totalMicros"], inner["totalMicros"])
@@ -224,9 +226,14 @@ class CollectorTest(unittest.TestCase):
             outer, inner = data[f"{prefix}.outer"], data[f"{prefix}.inner"]
             self.assertEqual(outer["calls"], rounds)
             self.assertEqual(inner["calls"], rounds)
-            self.assertGreaterEqual(outer["totalMicros"], inner["totalMicros"])
+            # Real timers accumulate ±ulp float noise across 25 rounds
+            # (upstream's Dart ints don't) — compare with 1µs slack; real
+            # frame corruption errs by whole calls, not by ulps.
+            slack = 1.0
+            self.assertGreaterEqual(outer["totalMicros"], inner["totalMicros"] - slack)
             self.assertLessEqual(
-                outer["totalSelfMicros"], outer["totalMicros"] - inner["totalMicros"]
+                outer["totalSelfMicros"],
+                outer["totalMicros"] - inner["totalMicros"] + slack,
             )
             self.assertGreaterEqual(inner["totalSelfMicros"], 0)
 
