@@ -11,7 +11,19 @@ if [ -z "$files" ]; then
   exit 0
 fi
 
-if ! command -v python >/dev/null 2>&1 || ! python -m crap4py --help >/dev/null 2>&1; then
+# Prefer python3: modern macOS and most Linux distributions ship no bare
+# `python`, so guarding on that name alone skipped the check entirely
+# whenever a virtualenv was not active.
+py=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 &&
+    "$candidate" -m crap4py --help >/dev/null 2>&1; then
+    py="$candidate"
+    break
+  fi
+done
+
+if [ -z "$py" ]; then
   echo "warning: crap4py not available; skipping CRAP pre-commit check." >&2
   exit 0
 fi
@@ -23,7 +35,7 @@ fi
 # check did not run, which must not read as approval.
 set +e
 # shellcheck disable=SC2086
-report=$(python -m crap4py --threshold 8.0 --coverage coverage.json $files 2>&1)
+report=$("$py" -m crap4py --threshold 8.0 --coverage coverage.json $files 2>&1)
 code=$?
 set -e
 
