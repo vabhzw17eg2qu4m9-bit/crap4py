@@ -383,19 +383,31 @@ Source-instrumentation profiler (port of the crap4dart profiler):
    `profile-reports/` skipped).
 2. Rewrites every function/method body of the selected sources (default:
    normal §4 selection) via the stdlib `ast` module as
-   `t0 = perf_counter(); try: <body> finally: record(key, (perf_counter() - t0) * 1e6)`.
+   `enter(key); try: <body> finally: exit(key)` — the collector owns the
+   per-call timer on its call stack, so `exit` records inclusive time and
+   self time (inclusive minus nested instrumented calls that completed
+   while the frame was open — flamegraph semantics). The stack is a
+   `threading.local()`: concurrent test threads never interleave frames
+   (upstream Dart keeps one global stack — its runs are single-threaded).
    The key is the **module-qualified** method name — `<module path>.` +
    the §6 qualified name (e.g. `pkg.mod.run`, nested `pkg.mod.run.inner`)
    — so same-named methods in different modules (every gate module
    defines `run`) never merge into one timing row or mis-attribute
    (0.9.2-era attribution fix).
-3. Injects `_crap_collector.py`, aggregating `(calls, totalMicros, minMicros,
-   maxMicros)` per key and merging into `.crap_profile.json` via an
-   atomic rename so several test processes combine. Temp file names carry
-   the worker pid; the flush reader retries once around a concurrent
-   rename; records flush every 5 calls (a crashed worker keeps everything
-   it flushed; successfully flushed records are cleared, so nothing is
-   double-counted) and once more at process exit (0.9.2).
+3. Injects `_crap_collector.py`, aggregating `(calls, totalMicros,
+   totalSelfMicros, minMicros, maxMicros)` per key and merging into
+   `.crap_profile.json` via an atomic rename so several test processes
+   combine. Temp file names carry the worker pid; the flush reader
+   retries once around a concurrent rename; records flush every 5 calls
+   and once more at process exit (0.9.2). A flush merges only the
+   records accumulated since the last one — `_STATS` is cleared only
+   after the atomic write succeeds, so a crashed worker keeps everything
+   it flushed and nothing is ever re-added (the 0.9.5 upstream
+   delta-flush fix, already correct here since 0.9.2 — `flush()` /
+   `_atomic_write()` inside `COLLECTOR_SOURCE`, `crap4py/profile.py`).
+   A `threading.Lock` spans the shared-stats update and the flush's
+   read-merge-write: Python tests run real threads (upstream's Dart
+   collector is single-threaded and needs no lock).
 4. Runs `python -m pytest [-k <pattern>]` in the copy (fallback:
    `python -m unittest discover [-s tests] [-k <pattern>]`); a failing run
    warns on stderr but any flushed timings are still reported. The test
@@ -407,13 +419,21 @@ Source-instrumentation profiler (port of the crap4dart profiler):
 Console table sorted by TOTAL desc, limited to `--top` rows (default 20):
 
 ```
-TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
+TOTAL | SELF | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
 ```
 
-(`%` = share of total time; `@60fps` = mean × 60 in ms; a `~` prefix on
+(TOTAL = inclusive time across all calls; SELF = total minus nested
+instrumented calls that completed while the frame was open — flamegraph
+self-time, ranking hot code by actual CPU burn rather than by caller
+fan-out. Interleaved `await`s on one thread interleave frames on that
+thread's stack: the same single-event-loop limitation upstream accepts.
+`%` = share of total time; `@60fps` = mean × 60 in ms; a `~` prefix on
 `MEAN` marks sub-30µs means, where instrumentation overhead dominates —
-read CALLS/TOTAL deltas there instead.) The full report is also written
-to `profile-reports/profile-<timestamp>.txt` and `.json`.
+read CALLS/TOTAL deltas there instead.) TOTAL, SELF and the summary
+line render time with adaptive units — `82.50ms`, `13.89s`, `22.50m`,
+`13.89h` — so extreme call counts keep the columns compact (0.9.5).
+The full report is also written to `profile-reports/profile-<timestamp>.txt`
+and `.json` (per-method records carry `totalSelfMicros`).
 
 Exit `2` when any method's total exceeds `--threshold` ms (default: off).
 
@@ -437,6 +457,17 @@ only that file's methods.
 
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
+
+Not ported from 0.9.5's `e2ce5e9`: the public `CrapCollector.flush()`
+API and the flush-on-outermost-method-exit checkpoint (flutter_test
+forbids pending timers, so upstream persists eagerly; the port has no
+such constraint — the every-5-calls flush plus `atexit` already keeps a
+crashed worker's tail). Also skipped: commit `b789739`'s icon/PNG assets
+(upstream branding only), and the upstream version/CHANGELOG bump
+(release-please owns versions here). The 0.9.5 delta-flush fix needs no
+port — this collector has merged only unflushed deltas since 0.9.2
+(`flush()` clears `_STATS` only after `_atomic_write()` succeeds,
+`crap4py/profile.py` `COLLECTOR_SOURCE`).
 
 ## 21. `test-assertions`
 

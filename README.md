@@ -86,10 +86,12 @@ crap4py --help               # print usage
 
 ## `crap4py profile`
 
-A source-instrumentation profiler: copies the project to a temp dir, wraps
-every function body in `time.perf_counter()` + `try/finally` (stdlib `ast`),
-runs the test suite (pytest, unittest fallback) against the instrumented
-copy, and reports exact per-method timing.
+A source-instrumentation profiler: copies the project to a temp dir,
+reports method entry/exit for every function body to an injected
+collector (stdlib `ast`) that owns per-call timers on a thread-local
+call stack, runs the test suite (pytest, unittest fallback) against the
+instrumented copy, and reports exact per-method inclusive (TOTAL) and
+self (SELF) timing.
 
 ```bash
 crap4py profile                      # profile the whole suite
@@ -98,13 +100,30 @@ crap4py profile --top 10             # limit console rows (default 20)
 crap4py profile --threshold 10.0     # exit 2 when any total exceeds 10ms
 ```
 
-Console columns: `TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE`.
-A `~` prefix on `MEAN` marks sub-30µs means, where instrumentation
-overhead dominates — read CALLS/TOTAL deltas there instead. Timing keys
+Example console output:
+
+```
+Profile Report (2 methods, total 73.90ms)
+    TOTAL      SELF       %  CALLS  MEAN(µs)  MAX(µs) @60fps(ms)  METHOD                   FILE:LINE
+  45.20ms   12.10ms   61.2%    142     318.3     2890      19.10  analyzer.analyze_method  pkg/analyzer.py:88
+  28.70ms    8.30ms   38.8%     88     326.1     2100      19.57  parser.parse_file        pkg/parser.py:21
+
+Threshold: 10.00ms — 2 methods exceed
+```
+
+Console columns: `TOTAL | SELF | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE`.
+**TOTAL** is inclusive time across all calls; **SELF** is total minus
+nested instrumented calls that completed while the frame was open
+(flamegraph self-time — ranks hot code by actual CPU burn, not by how
+many callers fan out through it). TOTAL, SELF and the summary line
+render with adaptive units (`82.50ms`, `13.89s`, `22.50m`, `13.89h`) so
+extreme call counts keep the columns compact. A `~` prefix on `MEAN`
+marks sub-30µs means, where instrumentation overhead dominates — read
+CALLS/TOTAL deltas there instead. Timing keys
 are module-qualified (`pkg.mod.func`), so same-named functions in
 different modules never merge into one row.
 Full reports are written to `profile-reports/profile-<timestamp>.txt` and
-`.json` regardless of `--top`.
+`.json` regardless of `--top` (per-method records carry `totalSelfMicros`).
 
 ## `crap4py file-naming`
 
