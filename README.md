@@ -36,7 +36,7 @@ pip install crap4py
 # or
 pipx install crap4py
 # or run directly without installing:
-python -m crap4py
+python3 -m crap4py
 ```
 
 For development:
@@ -44,7 +44,7 @@ For development:
 ```bash
 git clone <repo>
 cd crap4py
-python -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 ```
 
@@ -291,7 +291,7 @@ git config core.hooksPath githooks
 ## Running the tests
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
 ## License
