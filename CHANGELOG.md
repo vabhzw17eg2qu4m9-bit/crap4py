@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.5.1...v0.6.0) (2026-09-03)
+
+
+### Features
+
+* port crap4dart 0.9.5 profile self column and adaptive units ([#20](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/20)) ([5e5667f](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/5e5667f36e84b4ff77ec010c29b620afcb151c5f))
+
 ## [0.5.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.5.0...v0.5.1) (2026-08-21)
 
 
