@@ -168,6 +168,32 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(data["a"]["calls"], 8)
         self.assertAlmostEqual(data["a"]["totalMicros"], 80.0)
 
+    def test_outermost_exit_flushes_before_five_records(self):
+        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        clock = FakeClock()
+        ns = self._collector(clock)
+        self._call(ns, clock, "a", 10.0)
+        self.assertTrue(self.out.exists(), "outermost exit must flush the tail")
+        data = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(data["a"]["calls"], 1)
+
+    def test_nested_records_wait_for_the_outermost_exit(self):
+        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        clock = FakeClock()
+        ns = self._collector(clock)
+        ns["enter"]("outer")
+        ns["enter"]("inner")
+        clock.now += 10.0 / 1e6
+        ns["exit"]("inner")
+        self.assertFalse(self.out.exists(), "inner exit must not flush")
+        clock.now += 20.0 / 1e6
+        ns["exit"]("outer")
+        data = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(data["outer"]["calls"], 1)
+        self.assertEqual(data["inner"]["calls"], 1)
+
     def test_nested_self_time_excludes_inner_call(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
         self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)

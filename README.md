@@ -67,7 +67,7 @@ crap4py unused-files         # check for source files never imported
 crap4py banned-imports       # enforce --from/--forbid import boundaries
 crap4py magic-constants      # flag hex colors outside constants and repeated literals
 crap4py test-assertions      # flag test bodies without assertion calls
-crap4py folder-structure     # flag package dirs with loose .py files directly
+crap4py duplicates           # flag files over the duplicated-lines threshold
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -136,7 +136,7 @@ violations.
 
 ## Gate subcommands (ported from crap4dart 0.5.x–0.9.x)
 
-Nine quality-gate checks, each a standalone subcommand taking optional
+Ten quality-gate checks, each a standalone subcommand taking optional
 explicit paths (default: the normal §4-style selection — `src/` else `.`,
 test files skipped; `test-assertions` inverts this and scans test files).
 All exit `2` iff violations, `1` on usage errors.
@@ -152,6 +152,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
+| `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -162,6 +163,16 @@ it passes and says so.
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
 ```
+
+`duplicates` scans the whole set at once (duplicates are cross-file by
+definition): explicit paths (like every gate) or the default §4-style
+selection, plus any `--source` file/dir
+(dirs expand recursively to `.py`, missing paths skipped) — the hook for
+cross-module duplicate checks. `--exclude` globs (fnmatch on
+project-relative paths) drop files from the scan. A file fails when its
+distinct duplicated-token lines exceed `--threshold`% of its lines; the
+summary reports the aggregate share, e.g. `12 files, 0.42% duplicated
+lines` / `1/12 files over 1.0% duplication`.
 
 crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
 per-path threshold entries, yaml config, baselines) are not ported — ports
