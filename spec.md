@@ -34,7 +34,7 @@ crap4py unused-files [path]  Check for source files never imported.
 crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
 crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
 crap4py test-assertions [..] Flag test bodies without assertion calls.
-crap4py folder-structure [..] Flag package dirs with loose .py files directly.
+crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -47,7 +47,7 @@ Unknown flags → usage error (exit 1).
 
 Subcommands (`profile`, `skill`, `file-naming`, `nesting`, `class-size`,
 `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`,
-`magic-constants`, `test-assertions`, `folder-structure`) are
+`magic-constants`, `test-assertions`, `folder-structure`, `duplicates`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -458,16 +458,17 @@ only that file's methods.
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
 
-Not ported from 0.9.5's `e2ce5e9`: the public `CrapCollector.flush()`
-API and the flush-on-outermost-method-exit checkpoint (flutter_test
-forbids pending timers, so upstream persists eagerly; the port has no
-such constraint — the every-5-calls flush plus `atexit` already keeps a
-crashed worker's tail). Also skipped: commit `b789739`'s icon/PNG assets
-(upstream branding only), and the upstream version/CHANGELOG bump
-(release-please owns versions here). The 0.9.5 delta-flush fix needs no
-port — this collector has merged only unflushed deltas since 0.9.2
-(`flush()` clears `_STATS` only after `_atomic_write()` succeeds,
-`crap4py/profile.py` `COLLECTOR_SOURCE`).
+Ported from 0.9.5's `e2ce5e9`: the collector flushes on the outermost
+method exit as well as every 5 records — a completed top-level call is a
+natural checkpoint, so short runs don't lose their tail (`flush()` is
+public in the injected collector and also rides `atexit`). Upstream's
+flutter_test pending-timer workaround (no 1s flush timer) has no Python
+analog. Also skipped: commit `b789739`'s icon/PNG assets (upstream
+branding only — the port's own icon landed separately), and the upstream
+version/CHANGELOG bump (release-please owns versions here). The 0.9.5
+delta-flush fix needs no port — this collector has merged only unflushed
+deltas since 0.9.2 (`flush()` clears `_STATS` only after
+`_atomic_write()` succeeds, `crap4py/profile.py` `COLLECTOR_SOURCE`).
 
 ## 21. `test-assertions`
 
@@ -538,7 +539,61 @@ skill (when to profile, how the instrumentation works, how to read the
 report) plus one line on installing it as an agent skill
 (`.agents/skills/crap4py-profiling/SKILL.md`). Exit `0`, under ~80 lines.
 
-## 24. Non-goals
+## 24. `duplicates`
+
+crap4py duplicates [--threshold N] [--min-tokens N] [--min-lines N]
+                   [--exclude GLOB]... [--source PATH]... [paths...]
+```
+
+Flags files whose share of duplicated lines exceeds `--threshold` percent
+(default 1.0). Port of the crap4dart `duplication` gate (upstream §11.11)
+including the dc64e9c per-gate `sources` union.
+
+Detection tokenizes every scanned file with the stdlib `tokenize` module,
+keeping token lexemes with their source line. Dropped token types — the
+Python map of upstream's "comments and synthetic tokens are ignored":
+`COMMENT`, `NL`, `NEWLINE`, `INDENT`, `DEDENT`, `ENCODING`, `ENDMARKER`
+and `ERRORTOKEN`. A duplicated block is a window of at least
+`--min-tokens` (default 50) consecutive lexemes spanning at least
+`--min-lines` (default 5) source lines whose token sequence appears at
+least twice — within or across files, since every file is indexed
+together. Windows are indexed by a Rabin-Karp rolling hash over the
+lexeme hashes, mod 2**64 (upstream's jscpd-style scheme; a 64-bit hash
+collision reports a false duplicate, exactly as upstream accepts).
+
+A file's duplicated-line share is its distinct duplicated-token lines
+divided by its total line count; the file violates when the share is
+strictly greater than `--threshold`, reported at the first duplicated
+line: `<file>:<line>: X.XX% duplicated lines > T%`. Files with fewer
+than `--min-tokens` tokens never enter the scan (the summary counts
+tokenized files only). Pass summary: `N files, X.XX% duplicated lines`
+(aggregate share over the scanned set); fail summary:
+`M/N files over T% duplication`. With nothing tokenizable the gate
+passes with `no files with enough tokens`. Exit `2` iff violations,
+`1` on usage errors.
+
+File selection: like every gate, explicit `paths` (files/dirs, expanded
+to `.py`) replace the default scan set — the §4 selection (`src/` else
+`.`, test files and generated dirs already excluded — the port's
+stand-in for upstream's default `exclude` of generated files and
+`test/**`). `--source PATH` (repeatable) unions extra paths into the
+scan, resolved against the project root: directories are walked
+recursively for `.py` files, `.py` files are taken directly (even test
+files), missing paths are skipped silently — the intended mechanism for
+cross-module duplication checks while the CRAP analysis stays scoped.
+`--exclude GLOB` (repeatable) skips scanned files whose project-relative
+path matches the fnmatch glob (`*` crosses `/`). Duplicate detection is
+whole-set — every selected file is indexed together, so a block copied
+between files is marked in both; use `--source` to widen beyond the
+selection. Exit `2` iff violations, `1` on usage errors.
+
+Regression-pinned by `tests/test_duplicates.py`: within-file and
+cross-file detection, the `--min-tokens`/`--min-lines` boundaries,
+threshold exclusivity (`>` not `>=`), flag round-trips through `run()`
+(`--min-tokens`, `--threshold`), positional paths selecting the scan
+set, `--source` union with missing paths skipped, and `--exclude` globs.
+
+## 25. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).

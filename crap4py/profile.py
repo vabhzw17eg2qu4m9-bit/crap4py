@@ -470,9 +470,11 @@ def exit(key):
         if s["minMicros"] is None or inclusive < s["minMicros"]:
             s["minMicros"] = inclusive
         s["maxMicros"] = max(s["maxMicros"], inclusive)
-        # Flush every 5 records: a crashed worker keeps everything it flushed.
+        # Flush every 5 records or on outermost exit: a crashed worker keeps
+        # everything it flushed, and a completed top-level call is a natural
+        # checkpoint so short runs don't lose their tail (0.9.5).
         _CALLS += 1
-        due = _CALLS % 5 == 0
+        due = _CALLS % 5 == 0 or not stack
     if due:
         flush()
 

@@ -30,6 +30,7 @@ _SUBCOMMANDS = (
     "magic-constants",
     "test-assertions",
     "folder-structure",
+    "duplicates",
 )
 
 _USAGE = """\
@@ -47,7 +48,7 @@ Usage:
   crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
   crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
   crap4py test-assertions [..] Flag test bodies without assertion calls.
-  crap4py folder-structure     Flag package dirs with loose .py files directly.
+  crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -150,6 +151,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
     from . import (
         banned_imports,
         class_size,
+        duplicates,
         file_naming,
         folder_structure,
         magic_constants,
@@ -175,5 +177,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "magic-constants": magic_constants.run,
         "test-assertions": test_assertions.run,
         "folder-structure": folder_structure.run,
+        "duplicates": duplicates.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
