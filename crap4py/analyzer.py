@@ -56,7 +56,21 @@ def sort_metrics(metrics: list[MethodMetric]) -> list[MethodMetric]:
 
 
 def _relative_to_root(p: Path, root: Path) -> str:
+    """Path relative to ``root``, or the original path when it lies outside.
+
+    Both sides are resolved: resolving only ``p`` made the comparison
+    asymmetric, so a caller passing an unresolved root (a symlinked path such
+    as macOS's ``/var`` -> ``/private/var``) got the absolute path back
+    instead of a relative one.
+    """
     try:
-        return str(p.resolve().relative_to(root))
+        resolved_root = Path(root).resolve()
+    except (OSError, RuntimeError):
+        # A symlink loop or an unreadable parent leaves the root unresolvable;
+        # comparing against it as given is what this function did before, and
+        # is still better than failing outright.
+        resolved_root = Path(root)
+    try:
+        return str(p.resolve().relative_to(resolved_root))
     except ValueError:
         return str(p)
