@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.7.0...v0.7.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* pre-commit hook reliability and symmetric root resolution ([#22](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/22)) ([2cd3fcc](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/2cd3fccddb9c90f973440f97b4e451867a199c70))
+
 ## [0.7.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.6.0...v0.7.0) (2026-09-20)
 
 
