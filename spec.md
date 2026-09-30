@@ -542,6 +542,7 @@ report) plus one line on installing it as an agent skill
 ## 24. `duplicates`
 
 crap4py duplicates [--threshold N] [--min-tokens N] [--min-lines N]
+                   [--ignore-locals] [--ignore-literals]
                    [--exclude GLOB]... [--source PATH]... [paths...]
 ```
 
@@ -560,6 +561,25 @@ least twice — within or across files, since every file is indexed
 together. Windows are indexed by a Rabin-Karp rolling hash over the
 lexeme hashes, mod 2**64 (upstream's jscpd-style scheme; a 64-bit hash
 collision reports a false duplicate, exactly as upstream accepts).
+
+Two opt-in normalizations extend detection to renamed (Type-2) clones,
+both default off — with both off, behavior is identical to plain
+copy-paste detection. `--ignore-locals` renames function-local
+identifiers to `$L1`-style placeholders before hashing: one outermost
+scope per `def`/`async def`/`lambda` (nested functions share the
+enclosing scope), with each scope's declared names renamed in first-use
+order — parameters (except `self`/`cls` receivers), assigned, deleted,
+tuple-unpacking and walrus targets, loop and comprehension variables,
+`except as` names, match captures, 3.12+ type parameters, and locally
+declared defs/classes. Identifiers outside a scope's declared set keep
+their lexeme, so the API surface (called methods, types, fields,
+imports, globals — including `global`/`nonlocal` redeclarations) stays
+visible and swapped locals keep distinct placeholders. Interpolated
+(f-)strings turn opaque (`$STR`) because their raw lexeme embeds local
+identifiers. `--ignore-literals` replaces string and numeric literals
+with `$STR`/`$NUM` placeholders. Detection is a union of two passes: the
+raw-lexeme pass always runs alongside the masked one, so exact copies
+are never lost when enclosing scopes shift placeholder numbering.
 
 A file's duplicated-line share is its distinct duplicated-token lines
 divided by its total line count; the file violates when the share is

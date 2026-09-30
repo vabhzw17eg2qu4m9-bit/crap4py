@@ -34,6 +34,239 @@ def _pair_body() -> tuple[str, str]:
     return head + BLOCK + tail_a, head + BLOCK + tail_b
 
 
+def _renamed_pair() -> tuple[str, str]:
+    """Same algorithm with every function-local renamed (Type-2 clone)."""
+    return (
+        _renamed_body("run", "text", "idx", "item", "head", "tail", "out"),
+        _renamed_body("go", "data", "pos", "entry", "start", "stop", "sink"),
+    )
+
+
+def _renamed_body(
+    name: str, value: str, idx: str, item: str, head: str, tail: str, out: str
+) -> str:
+    return f"""
+def {name}({value}, {head}, {tail}, {out}):
+    total = 0
+    for {idx} in range(len({value})):
+        {item} = {value}[{idx}]
+        if {item}.startswith({head}):
+            {out}.append({item}[len({head}):])
+        elif {item}.endswith({tail}):
+            {out}.append({item}[:-len({tail})])
+        else:
+            {out}.append({item}.lower())
+        total += len({item})
+    return {out}, total
+"""
+
+
+def _swapped_pair() -> tuple[str, str]:
+    """Same def-site names, body roles crossed: not alpha-equivalent, so
+    consistent renaming must not make them match."""
+    return (
+        _swapped_body("calc", "a", "b", "acc", "a", "b"),
+        _swapped_body("calc", "a", "b", "acc", "b", "a"),
+    )
+
+
+def _swapped_body(name: str, first: str, second: str, total: str, bound: str, addend: str) -> str:
+    return f"""
+def {name}({first}, {second}):
+    {total} = 0
+    for k in range({bound}):
+        {total} += {addend}
+        if {total} > {bound}:
+            {total} -= 1
+        while {total} < {addend}:
+            {total} += {bound}
+        for part in ({total}, {bound}, {addend}):
+            {total} += len(str(part)) if part else 1
+        seen = [{total}, {bound}, {addend}]
+        {total} += sum(seen) % 7
+    return {total}
+"""
+
+
+def _callee_pair() -> tuple[str, str]:
+    """Identical except the called method names (API surface)."""
+    return (
+        _callee_body("process", "value", "out", "append"),
+        _callee_body("process", "value", "out", "extend"),
+    )
+
+
+def _callee_body(name: str, value: str, out: str, method: str) -> str:
+    return f"""
+def {name}({value}, {out}):
+    for ch in {value}:
+        if ch.isspace():
+            {out}.{method}(ch.strip())
+        elif ch.isdigit():
+            {out}.{method}(ch * 3)
+        elif ch.isupper():
+            {out}.{method}(ch.lower())
+        else:
+            {out}.{method}(ch)
+    return {out}
+"""
+
+
+def _recursive_pair() -> tuple[str, str]:
+    """Recursive clones whose only differences are the function's own name
+    and a parameter: self-calls are API surface and must stay visible."""
+    return _recursive_body("fact", "k"), _recursive_body("go", "m")
+
+
+def _recursive_body(name: str, n: str) -> str:
+    return f"""
+def {name}({n}):
+    if {n} <= 1:
+        return 1
+    partial = {name}({n} - 1)
+    other = {name}({n} - 2)
+    third = {name}({n} - 3)
+    combined = [partial, other, third]
+    total = 0
+    for item in combined:
+        total += item * {n}
+    return {n} if total else {name}(1)
+"""
+
+
+def _repo_pair() -> tuple[str, str]:
+    """Identical except attribute (field) names — fields are API surface."""
+    return _repo_body("RepoA", "_cache"), _repo_body("RepoB", "_store")
+
+
+def _repo_body(name: str, attr: str) -> str:
+    return f"""
+class {name}:
+    def __init__(self):
+        self.{attr} = {{}}
+
+    def get(self, key):
+        return self.{attr}.get(key, None)
+
+    def put(self, key, item):
+        self.{attr}[key] = item
+        return len(self.{attr})
+"""
+
+
+def _kinds_pair() -> tuple[str, str]:
+    """Renamed clones exercising every binding kind at once (f-string over
+    a local, nested def, comprehension, walrus, except-as, *args, kwonly,
+    **kwargs; the nonlocal'd counter keeps its shared name)."""
+    return (
+        _kinds_body(
+            "run",
+            "text",
+            "extra",
+            "strict",
+            "opts",
+            "lead",
+            "end",
+            "memo",
+            "node",
+            "scan",
+            "merge",
+            "oops",
+        ),
+        _kinds_body(
+            "go",
+            "data",
+            "rest",
+            "flag",
+            "kw",
+            "left",
+            "right",
+            "hold",
+            "item",
+            "step",
+            "join",
+            "err",
+        ),
+    )
+
+
+def _kinds_body(
+    name: str,
+    src: str,
+    rest: str,
+    strict: str,
+    opts: str,
+    lead: str,
+    end: str,
+    memo: str,
+    node: str,
+    scan: str,
+    merge: str,
+    exc: str,
+) -> str:
+    return f"""
+def {name}({src}, *{rest}, {strict}=None, **{opts}):
+    try:
+        {lead}, {end} = {src}.split("|")
+        count = ({memo} := len({lead})) or 0
+        for {node} in [{lead}, {end}, *{rest}]:
+            count += len({node}) + len([{scan} for {scan} in {src} if {scan}])
+        def {merge}(parts):
+            nonlocal count
+            count += 1
+            return {strict} + "|".join(parts) + f"{{count!r}}"
+        return {merge}([{lead}, {end}]), {memo} + len({opts})
+    except ValueError as {exc}:
+        return {exc}, count
+"""
+
+
+def _literal_pair() -> tuple[str, str]:
+    """Identical except string/number literal values."""
+    return _literal_body("process", "100", "alpha"), _literal_body("handle", "200", "beta")
+
+
+def _literal_body(name: str, limit: str, label: str) -> str:
+    return f'''
+def {name}(value, out):
+    total = 0
+    for i in range(len(value)):
+        item = value[i]
+        if len(value) > {limit}:
+            raise ValueError("{label}")
+        if item.startswith("{label}"):
+            out.append(item)
+        elif item.endswith("{label}"):
+            out.append(item.lower())
+        else:
+            out.append(item.strip())
+        total += len(item)
+    return total or "{label}"
+'''
+
+
+def _shifted_pair() -> tuple[str, str]:
+    """An exact-copy block whose scope in alpha carries extra leading
+    locals, shifting placeholder numbering against beta (upstream 94299e0):
+    only the raw pass can still match them."""
+    body = (
+        "    sink = []\n"
+        "    for i in range(9):\n"
+        "        entry = 7 * i\n"
+        "        if entry < 0:\n"
+        "            sink.append(0)\n"
+        "        else:\n"
+        "            sink.append(entry + 1)\n"
+        "        for part in entry, i:\n"
+        "            sink.append(part + len(sink))\n"
+        "    while len(sink) < 12:\n"
+        "        sink.extend(sink[:3])\n"
+        "    return sink\n"
+    )
+    lead = '    noise = len("shift")\n    filler = [noise, noise]\n'
+    return "def shift(mode):\n" + lead + body, "def plain():\n" + body
+
+
 def _result(tmp: Path, **kwargs):
     return scan_files(sorted(tmp.rglob("*.py")), tmp, **kwargs)
 
@@ -122,6 +355,62 @@ class DuplicateDetectionTest(unittest.TestCase):
         result = _result(self.root)
         self.assertEqual(result.violations, ())
         self.assertEqual(result.summary, "no files with enough tokens")
+
+
+class Type2NormalizationTest(unittest.TestCase):
+    """``--ignore-locals`` / ``--ignore-literals`` (upstream 0599df2 +
+    94299e0): both off stays Type-1; each knob only adds findings."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write_pair(self, pair: tuple[str, str]) -> None:
+        for name, body in zip(("alpha.py", "beta.py"), pair, strict=True):
+            (self.root / name).write_text(body, encoding="utf-8")
+
+    def test_ignore_locals_detects_renamed_clone_across_files(self):
+        self._write_pair(_renamed_pair())
+        result = _result(self.root, ignore_locals=True)
+        self.assertEqual({v.file for v in result.violations}, {"alpha.py", "beta.py"})
+
+    def test_renamed_clone_passes_without_ignore_locals(self):
+        self._write_pair(_renamed_pair())
+        self.assertEqual(_result(self.root).violations, ())
+
+    def test_swapped_locals_never_match(self):
+        self._write_pair(_swapped_pair())
+        self.assertEqual(_result(self.root, ignore_locals=True).violations, ())
+
+    def test_different_called_methods_never_match(self):
+        self._write_pair(_callee_pair())
+        self.assertEqual(_result(self.root, ignore_locals=True).violations, ())
+
+    def test_field_references_stay_visible_under_ignore_locals(self):
+        self._write_pair(_repo_pair())
+        self.assertEqual(_result(self.root, ignore_locals=True).violations, ())
+
+    def test_recursive_self_calls_stay_visible_under_ignore_locals(self):
+        self._write_pair(_recursive_pair())
+        self.assertEqual(_result(self.root, ignore_locals=True).violations, ())
+
+    def test_all_declaration_kinds_rename_consistently(self):
+        self._write_pair(_kinds_pair())
+        self.assertEqual(_result(self.root).violations, ())
+        result = _result(self.root, ignore_locals=True)
+        self.assertEqual({v.file for v in result.violations}, {"alpha.py", "beta.py"})
+
+    def test_ignore_literals_matches_clones_differing_only_in_literals(self):
+        self._write_pair(_literal_pair())
+        self.assertEqual(_result(self.root).violations, ())
+        result = _result(self.root, ignore_literals=True)
+        self.assertEqual({v.file for v in result.violations}, {"alpha.py", "beta.py"})
+
+    def test_exact_copy_survives_shifted_placeholder_numbering(self):
+        self._write_pair(_shifted_pair())
+        result = _result(self.root, ignore_locals=True)
+        self.assertEqual({v.file for v in result.violations}, {"alpha.py", "beta.py"})
 
 
 class SourceAndExcludeTest(unittest.TestCase):
@@ -405,6 +694,15 @@ class DuplicatesCliTest(unittest.TestCase):
         r = self._run("--bogus")
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("error", r.stderr)
+
+    def test_duplicates_ignore_locals_flag_gates_renamed_clones(self):
+        for name, body in zip(("alpha.py", "beta.py"), _renamed_pair(), strict=True):
+            (self.root / name).write_text(body, encoding="utf-8")
+        off = self._run()
+        self.assertEqual(off.returncode, 0, off.stderr)
+        flagged = self._run("--ignore-locals")
+        self.assertEqual(flagged.returncode, 2, flagged.stderr)
+        self.assertIn("alpha.py:", flagged.stdout)
 
 
 if __name__ == "__main__":
