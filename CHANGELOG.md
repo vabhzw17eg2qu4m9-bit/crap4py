@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.7.1...v0.8.0) (2026-09-30)
+
+
+### Features
+
+* duplication gate Type-2 clone detection — ignore_locals / ignore_literals ([#27](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/27)) ([7a243b4](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/7a243b49d347feca91847618b1646d9d9c14b26a))
+
 ## [0.7.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.7.0...v0.7.1) (2026-09-21)
 
 
