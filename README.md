@@ -152,7 +152,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
-| `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. |
+| `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization (below). |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -173,6 +173,17 @@ project-relative paths) drop files from the scan. A file fails when its
 distinct duplicated-token lines exceed `--threshold`% of its lines; the
 summary reports the aggregate share, e.g. `12 files, 0.42% duplicated
 lines` / `1/12 files over 1.0% duplication`.
+
+Two opt-in normalizations extend the gate to renamed (Type-2) clones,
+both off by default. `--ignore-locals` renames function-local
+identifiers to `$L1`-style placeholders in first-use order per outermost
+`def`/`async def`/`lambda` scope (parameters except `self`/`cls`,
+assigned/unpacking/walrus targets, loop and comprehension variables,
+`except as` names, match captures, type params, nested defs; API names
+keep their lexemes, and f-strings go opaque). `--ignore-literals` masks
+string/numeric literals as `$STR`/`$NUM`. Detection unions the raw pass
+with the masked one, so exact copies survive shifted placeholder
+numbering.
 
 crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
 per-path threshold entries, yaml config, baselines) are not ported — ports
