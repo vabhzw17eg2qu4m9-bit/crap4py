@@ -13,3 +13,4 @@ venv/
 .ruff_cache/
 profile-reports/
 .crap_profile_temp/
+.crap-mutation-cache.json

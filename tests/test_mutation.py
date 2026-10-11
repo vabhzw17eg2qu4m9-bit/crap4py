@@ -215,10 +215,11 @@ class EngineTest(unittest.TestCase):
             seen.append(self.path.read_text())
             return Killed
 
-        outcomes = run_mutants(str(self.root), sites, 5, runner)
+        records, integrity = run_mutants(str(self.root), sites, 5, runner)
         self.assertEqual(seen, [text.replace("+", "X"), text.replace("0", "Y")])
         self.assertEqual(self.path.read_text(), text)
-        self.assertEqual([o for _, o in outcomes], [Killed, Killed])
+        self.assertEqual([record.outcome for record in records], [Killed, Killed])
+        self.assertEqual(integrity, [])
 
     def test_restores_when_runner_raises(self):
         text = self.path.read_text()
