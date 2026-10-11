@@ -621,7 +621,8 @@ set, `--source` union with missing paths skipped, and `--exclude` globs.
 crap4py mutation [--coverage PATH] [--min-score N] [--max-survivors N]
                  [--timeout-seconds N] [--max-mutants N]
                  [--operator CATEGORY]... [--exclude GLOB]...
-                 [--cache/--no-cache] [--test-args ARG]... [paths...]
+                 [--cache/--no-cache] [--test-args ARG]...
+                 [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]
 ```
 
 Mutation testing, port of the crap4dart `mutation` gate (upstream c865ec3,
@@ -707,6 +708,36 @@ suite is the caller's responsibility: a mutant is killed only if the scoped
 suite would kill it. Empty `--test-args` values are usage errors (exit 1),
 matching upstream's strict validation.
 
+Diff-scoped execution (port of upstream 8228585): when `--diff-base REF`
+is given, the gate intersects the candidate sites with the changed lines
+BEFORE executing, not merely filters reported violations afterwards: a
+site runs only when its containing method intersects the diff (falling
+back to the site's own line when no method contains it — module-level
+code). The changed lines come from a fixed-argv `git diff --unified=0
+REF -- '*.py'` run at the project root (new-side paths → 1-based added
+line numbers, the Python equivalent of upstream's `DiffLineMap`; a file
+with only deletions maps to an empty set, deleted files are absent).
+Sites outside the diff are neither executed nor counted, so a per-PR run
+pays only for the mutants of the changed methods. A git failure (unknown
+ref, not a repository) is a usage error: `git diff failed: …` on stderr,
+exit 1.
+
+Per-mutant test scoping: `--scope-tests` (default off) narrows each
+mutant's invocation to the derived test file of the mutated file —
+`tests/test_<module>.py` by module stem (`crap4py/mutation.py` →
+`tests/test_mutation.py`) — falling back to the full invocation
+(`--test-args`) when no candidate test file exists. Under the unittest
+runner, scoped file arguments run as dotted modules
+(`python -m unittest tests.test_a`: discovery cannot take file paths);
+pytest takes the path directly. A scoped invocation is a SUBSET of the
+full suite, so a scoped kill is monotone (the full suite kills that
+mutant too) and is cached as a regular kill; a scoped survivor — a
+timeout included — is NOT monotone, so it is re-confirmed once against
+the full invocation, and only the confirmed outcome is reported and
+cached. `--scope-tests` is deliberately not part of the cache meta
+guard. The summary counts the scoped sites owing confirmation and the
+re-confirmed kills: `; test-scoped N (M re-confirmed killed)`.
+
 End-of-run tree integrity check (port of upstream 8b2e8e8): the engine
 snapshots every file it is about to mutate before the mutant loop and, in
 an outer `finally`, re-verifies the whole tree against those snapshots
@@ -728,13 +759,25 @@ engine mutate-restore (including on runner errors), real-subprocess
 survived/killed/timeout/import-error verdicts, uncovered exclusion,
 skip conditions, `--max-mutants` cap, `--min-score`/`--max-survivors`
 interplay, violation file+line output, and plain-analysis never mutating.
+It also pins the 8228585 port: diff-hunk parsing (added lines per new
+path, deletions absent), diff-scoped execution (only diff-intersecting
+methods execute; sites outside the diff neither executed nor counted;
+module-level sites fall back to their own line), `--diff-base` E2E
+against a real git repo, the `tests/test_<module>.py` derivation,
+fallback to `--test-args` (fallback survivors re-confirmed against the
+same invocation), scoped-kill monotonicity, scoped-survivor
+re-confirmation (survived and timed-out) with only the confirmed outcome
+reported, and the scoped invocation reaching a real subprocess.
 `tests/test_mutation_cache.py` pins the digest cache and the integrity
 check: cold/warm equivalence (zero runner calls on replay), survivors
 always re-executing, method-relative invalidation, operator and
 `--test-args` meta-guard wipes, version/corruption resets, pruning of
 vanished methods, cross-file keying, module-level sites never cached,
 out-of-band mutation self-heal, byte-identical trees on success and
-mid-loop exceptions, and `--test-args` scoping/validation.
+mid-loop exceptions, and `--test-args` scoping/validation — plus the
+scope_tests cache interplay: scoped kills cached as regular kills and
+replayed with `--scope-tests` off, confirmed scoped kills cached, and a
+meta guard identical with and without scoping.
 
 ## 26. Non-goals
 

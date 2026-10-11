@@ -16,6 +16,18 @@ mutants of methods whose source-span digest is unchanged (survivors always
 re-execute; a tool/operator/test_args change wipes the cache), and an
 end-of-run integrity check re-verifies every mutated file against its
 pre-run snapshot, re-restoring and reporting any out-of-band drift.
+
+Diff-scoped execution (port of upstream 8228585): under ``--diff-base
+<ref>`` the gate intersects candidate sites with the changed lines BEFORE
+executing — a site runs only when its containing method intersects the
+diff (the site's own line when it sits outside every method), so per-PR
+runs pay only for the mutants of the changed methods. ``--scope-tests``
+narrow each mutant's invocation to the derived test file of the mutated
+file (``tests/test_<module>.py``), falling back to ``--test-args`` when no
+candidate exists: a scoped kill is monotone (the scoped invocation is a
+subset of the full suite) and is cached as a regular kill; a scoped
+survivor — a timeout included — is re-confirmed once against the full
+invocation, and only the confirmed outcome is reported and cached.
 """
 
 from __future__ import annotations
@@ -27,6 +39,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -103,8 +116,9 @@ Killed = "killed"
 Survived = "survived"
 Timeout = "timeout"
 
-#: Per-mutant test runner: ``(project_root, timeout_seconds) -> outcome``.
-MutantRunner = Callable[[str, int], str]
+#: Per-mutant test runner: ``(project_root, timeout_seconds, test_args) -> outcome``.
+#: ``test_args`` are the resolved per-site invocation arguments (test scoping).
+MutantRunner = Callable[[str, int, Iterable[str]], str]
 
 _TOKENIZE_NOISE = frozenset(
     {
@@ -354,6 +368,20 @@ class MutantRecord(NamedTuple):
     site: MutationSite
     outcome: str
     from_cache: bool
+
+
+class MutationRun(NamedTuple):
+    """Result of one engine run: records, integrity paths, scoping counters.
+
+    ``scoped`` counts the sites whose scoped first run did not kill (they
+    owed a confirmation against the full invocation); ``confirmed`` counts
+    those confirmations that killed the mutant.
+    """
+
+    records: list[MutantRecord]
+    integrity: list[str]
+    scoped: int
+    confirmed: int
 
 
 class MutationScan(NamedTuple):
@@ -771,16 +799,22 @@ def default_test_command(project_root: str, test_args: Iterable[str] = ()) -> li
     ``test_args`` scopes the run (e.g. ``["tests/test_analyzer.py"]``);
     the default runs the whole suite. Scoping is the caller's
     responsibility: a mutant is killed only if the scoped suite would
-    kill it.
+    kill it. unittest discovery cannot take file paths, so scoped file
+    arguments run as dotted modules (``tests/test_a.py`` ->
+    ``python -m unittest tests.test_a``).
     """
     if importlib.util.find_spec("pytest") is not None:
         return [sys.executable, "-m", "pytest", *test_args]
+    if test_args:
+        modules = [arg[: -len(".py")].replace("/", ".") for arg in test_args if arg.endswith(".py")]
+        if modules:
+            return [sys.executable, "-m", "unittest", *modules]
     base = "tests" if (Path(project_root) / "tests").is_dir() else "test"
     return [sys.executable, "-m", "unittest", "discover", "-s", base, *test_args]
 
 
 def run_mutant_tests(
-    project_root: str, timeout_seconds: int, spawn=None, test_args: Iterable[str] = ()
+    project_root: str, timeout_seconds: int, test_args: Iterable[str] = (), spawn=None
 ) -> str:
     """Run the project's test suite once, killing it when it outlives the timeout.
 
@@ -822,20 +856,91 @@ def _clear_pycache(root: Path) -> None:
             shutil.rmtree(cache, ignore_errors=True)
 
 
+#: Unified-diff hunk header: ``@@ -l,s +l,s @@`` — new start and line count.
+_HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _added_lines_in_hunk(header: str) -> tuple[int, int] | None:
+    """(new start, line count) of a hunk header, or None when unparseable."""
+    match = _HUNK_RE.match(header)
+    if match is None:
+        return None
+    count = 1 if match.group(2) is None else int(match.group(2))
+    return int(match.group(1)), count
+
+
+def parse_changed_lines(diff_output: str) -> dict[str, set[int]]:
+    """Parse ``git diff --unified=0`` output into new-path -> added lines.
+
+    Keys are the new-side project-relative paths of non-deleted files; the
+    values are the 1-based line numbers added or changed in the diff (the
+    Python equivalent of upstream's ``DiffLineMap.addedLines``). A file
+    with only deletions maps to an empty set; deleted files are absent.
+    """
+    added: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in diff_output.splitlines():
+        if line.startswith("+++ "):
+            header = line[4:].strip()
+            current = None if header == "/dev/null" else header.removeprefix("b/")
+        elif line.startswith("@@") and current is not None:
+            hunk = _added_lines_in_hunk(line)
+            if hunk is not None:
+                start, count = hunk
+                added.setdefault(current, set()).update(range(start, start + count))
+    return added
+
+
+def load_changed_lines(project_root: Path, base: str) -> dict[str, set[int]] | None:
+    """Changed lines vs ``base`` via fixed-argv ``git diff`` (no shell).
+
+    Returns ``None`` on any git failure (unknown ref, not a repository) —
+    the caller reports it and exits with a usage error, mirroring
+    upstream's ``_loadDiff``.
+    """
+    proc = subprocess.run(
+        ["git", "diff", "--unified=0", base, "--", "*.py"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        print(f"git diff failed: {proc.stderr.strip()}", file=sys.stderr)
+        return None
+    return parse_changed_lines(proc.stdout)
+
+
+def derived_test_file(site_file: str) -> str:
+    """The derived test file of a mutated file: ``tests/test_<module>.py``.
+
+    The repo's layout convention (upstream derives ``test/…`` mirrors of
+    ``lib/…``; this port mirrors the module stem into ``tests/``).
+    """
+    return f"tests/test_{Path(site_file).stem}.py"
+
+
 def run_mutants(
     project_root: str,
     sites: list[MutationSite],
     timeout_seconds: int,
     runner: MutantRunner | None = None,
     caching: CacheSession | None = None,
-) -> tuple[list[MutantRecord], list[str]]:
+    test_args_for: Callable[[MutationSite], list[str]] | None = None,
+) -> MutationRun:
     """Mutate every site one at a time, run the tests, restore the file.
 
     With ``caching``, killed mutants of digest-unchanged methods replay
     from the cache instead of executing; survivors always re-execute, and
-    the merged cache is persisted after the run. Returns the per-site
-    records plus the integrity violations (files the end-of-run check had
-    to re-restore — empty when the tree healed trivially).
+    the merged cache is persisted after the run. With ``test_args_for``
+    (test scoping), each site's first run uses the resolved per-site
+    invocation — a SUBSET of the full suite, so a scoped kill is monotone
+    and cached as a regular kill, while a scoped survivor (timeouts
+    included) is not: it is re-confirmed once against the full invocation
+    and only the confirmed outcome is reported and cached. Returns the
+    per-site records, the integrity violations (files the end-of-run
+    check had to re-restore — empty when the tree healed trivially) and
+    the scoping counters.
     """
     runner = runner or run_mutant_tests
     root = Path(project_root)
@@ -843,9 +948,14 @@ def run_mutants(
     originals = _snapshot_originals(root, sites)
     fresh: dict[str, tuple[str, list[CachedOutcome]]] = {}
     records: list[MutantRecord] = []
+    deferred: list[int] = []
     try:
-        for site in sites:
-            records.append(_run_site(root, site, timeout_seconds, runner, caching, fresh))
+        _execute_all(
+            root, sites, timeout_seconds, runner, caching, test_args_for, records, fresh, deferred
+        )
+        confirmed = _confirm_scoped(
+            root, records, deferred, timeout_seconds, runner, caching, fresh
+        )
     finally:
         # End-of-run integrity check: restore any file that does not match
         # its snapshot, even when the loop died mid-mutant. A per-site
@@ -854,36 +964,100 @@ def run_mutants(
         # self-healing error instead.
         violations = _verify_integrity(originals)
     _persist(caching, fresh)
-    return records, violations
+    return MutationRun(records, violations, len(deferred), confirmed)
 
 
-def _run_site(
+def _execute_all(
     root: Path,
+    sites: list[MutationSite],
+    timeout_seconds: int,
+    runner: MutantRunner,
+    caching: CacheSession | None,
+    test_args_for: Callable[[MutationSite], list[str]] | None,
+    records: list[MutantRecord],
+    fresh: dict[str, tuple[str, list[CachedOutcome]]],
+    deferred: list[int],
+) -> None:
+    """Run every site once: cache replays, scoped or full executions.
+
+    Scoped survivors are deferred (their record indices land in
+    ``deferred``) for :func:`_confirm_scoped`; everything else merges
+    into ``fresh``.
+    """
+    for site in sites:
+        replayed = _replay(caching, site)
+        if replayed is not None:
+            _accumulate(fresh, caching.site_methods[site], replayed)
+            records.append(MutantRecord(site, Killed, True))
+            continue
+        scoped = test_args_for(site) if test_args_for is not None else None
+        outcome = _execute_site(root, site, timeout_seconds, runner, scoped or ())
+        records.append(MutantRecord(site, outcome, False))
+        if scoped is not None and outcome != Killed:
+            # Scoped survival is unverified: the scoped run may omit
+            # the killing test. Confirm before caching or reporting.
+            deferred.append(len(records) - 1)
+        else:
+            _fresh_outcome(caching, fresh, site, outcome)
+
+
+def _replay(caching: CacheSession | None, site: MutationSite) -> CachedOutcome | None:
+    """The cached kill for ``site``, or None (also None without a session)."""
+    if caching is None:
+        return None
+    ref = caching.site_methods.get(site)
+    return caching.cache.replay_kill(ref, site) if ref is not None else None
+
+
+def _fresh_outcome(
+    caching: CacheSession | None,
+    fresh: dict[str, tuple[str, list[CachedOutcome]]],
     site: MutationSite,
+    outcome: str,
+) -> None:
+    """Merge a fresh outcome into ``fresh`` (cache-bound sites only)."""
+    ref = caching.site_methods.get(site) if caching else None
+    if ref is not None:
+        _accumulate(fresh, ref, _cached_outcome(site, outcome, ref))
+
+
+def _confirm_scoped(
+    root: Path,
+    records: list[MutantRecord],
+    deferred: list[int],
     timeout_seconds: int,
     runner: MutantRunner,
     caching: CacheSession | None,
     fresh: dict[str, tuple[str, list[CachedOutcome]]],
-) -> MutantRecord:
-    ref = caching.site_methods.get(site) if caching else None
-    replayed = caching.cache.replay_kill(ref, site) if ref is not None else None
-    if replayed is not None:
-        _accumulate(fresh, ref, replayed)
-        return MutantRecord(site, Killed, True)
-    outcome = _execute_site(root, site, timeout_seconds, runner)
-    if ref is not None:
-        _accumulate(fresh, ref, _cached_outcome(site, outcome, ref))
-    return MutantRecord(site, outcome, False)
+) -> int:
+    """Re-run every deferred scoped survivor against the full invocation.
+
+    Overwrites the deferred record with the confirmed outcome (and caches
+    it); returns how many confirmations killed the mutant.
+    """
+    confirmed = 0
+    for index in deferred:
+        record = records[index]
+        outcome = _execute_site(root, record.site, timeout_seconds, runner, ())
+        records[index] = MutantRecord(record.site, outcome, False)
+        if outcome == Killed:
+            confirmed += 1
+        _fresh_outcome(caching, fresh, record.site, outcome)
+    return confirmed
 
 
 def _execute_site(
-    root: Path, site: MutationSite, timeout_seconds: int, runner: MutantRunner
+    root: Path,
+    site: MutationSite,
+    timeout_seconds: int,
+    runner: MutantRunner,
+    test_args: Iterable[str] = (),
 ) -> str:
     path = root / site.file
     original = path.read_text()
     path.write_text(site.apply_to(original))
     try:
-        return runner(str(root), timeout_seconds)
+        return runner(str(root), timeout_seconds, test_args)
     finally:
         # Always restore the file, also after timeouts and errors.
         path.write_text(original)
@@ -947,24 +1121,47 @@ def _covered_sites(
     coverage: dict[str, FileCoverage],
     max_mutants: int,
     categories: Iterable[str],
+    diff: dict[str, set[int]] | None = None,
 ) -> MutationScan:
     """Detect sites in every file and keep the covered ones, capped at
     ``max_mutants`` (file order, then offset — the cap is deterministic).
 
-    Every file's methods become live cache keys (the cap only limits
-    executed sites), and each kept site inside a function is bound to
-    that function's cache identity.
+    In a diff run only sites whose containing method intersects the
+    changed lines are kept at all: everything outside the diff is not a
+    mutant of this change and is neither executed nor counted. Every
+    file's methods become live cache keys (the cap only limits executed
+    sites), and each kept site inside a function is bound to that
+    function's cache identity.
     """
     covered: list[MutationSite] = []
     site_methods: dict[MutationSite, MethodRef] = {}
     live_keys: set[str] = set()
     uncovered = 0
     for path in files:
-        found = _scan_file(path, root, coverage, max_mutants - len(covered), categories, live_keys)
+        found = _scan_file(
+            path, root, coverage, max_mutants - len(covered), categories, live_keys, diff
+        )
         covered.extend(found.sites)
         site_methods.update(found.site_methods)
         uncovered += found.uncovered
     return MutationScan(covered, uncovered, site_methods, live_keys)
+
+
+def _in_diff(diff: dict[str, set[int]] | None, rel: str, site: MutationSite, methods: list) -> bool:
+    """Whether the site's containing method intersects the changed lines.
+
+    Falls back to the site's own line when it sits outside every method
+    (module-level code). ``None`` (full run) intersects everything.
+    """
+    if diff is None:
+        return True
+    changed = diff.get(rel, ())
+    if not changed:
+        return False
+    method = _containing(methods, site.line)
+    if method is not None:
+        return any(method.start_line <= line <= method.end_line for line in changed)
+    return site.line in changed
 
 
 def _scan_file(
@@ -974,6 +1171,7 @@ def _scan_file(
     budget: int,
     categories: Iterable[str],
     live_keys: set[str],
+    diff: dict[str, set[int]] | None = None,
 ) -> MutationScan:
     """The covered sites (up to ``budget``) of one file, each bound to its method.
 
@@ -987,12 +1185,32 @@ def _scan_file(
     text = path.read_text()
     methods = extract_methods(text, rel)
     live_keys.update(MutationCache.methods_key(rel, method.name) for method in methods)
-    file_coverage = coverage.get(rel)
+    return _kept_sites(rel, text, tree, methods, coverage.get(rel), budget, categories, diff)
+
+
+def _kept_sites(
+    rel: str,
+    text: str,
+    tree: ast.Module,
+    methods: list,
+    file_coverage: FileCoverage | None,
+    budget: int,
+    categories: Iterable[str],
+    diff: dict[str, set[int]] | None,
+) -> MutationScan:
+    """The kept sites of one parsed file: diff-intersecting and covered.
+
+    Diff-excluded sites come first: in a diff run everything outside the
+    changed lines is not a mutant of this change and is neither executed
+    nor counted.
+    """
     starts = _line_starts(text)
     sites: list[MutationSite] = []
     site_methods: dict[MutationSite, MethodRef] = {}
     uncovered = 0
     for site in detect_sites(tree, text, rel, categories):
+        if not _in_diff(diff, rel, site, methods):
+            continue
         if len(sites) >= budget:
             break
         if not _is_covered(site, file_coverage, methods):
@@ -1032,6 +1250,8 @@ def scan_files(
     runner: MutantRunner | None = None,
     use_cache: bool = True,
     test_args: Iterable[str] = (),
+    diff: dict[str, set[int]] | None = None,
+    scope_tests: bool = False,
 ) -> MutationResult:
     """Gate core: detect covered sites, mutate one at a time, report survivors."""
     if coverage is None:
@@ -1040,23 +1260,38 @@ def scan_files(
         return MutationResult((), "skipped: no tests directory")
     root = Path(project_root)
     selected = _select(files, root, excludes)
-    scan = _covered_sites(selected, root, coverage, max_mutants, tuple(operators))
+    scan = _covered_sites(selected, root, coverage, max_mutants, tuple(operators), diff)
     if not scan.sites:
         return MutationResult((), _empty_summary(scan.uncovered))
     try:
-        records, rel_integrity = _run_scanned(
-            root, scan, timeout_seconds, runner, tuple(operators), tuple(test_args), use_cache
+        run = _run_scanned(
+            root,
+            scan,
+            timeout_seconds,
+            runner,
+            tuple(operators),
+            tuple(test_args),
+            use_cache,
+            scope_tests,
         )
     except MutationUnavailable as exc:
         return MutationResult((), f"skipped: {exc}")
-    if rel_integrity:
+    if run.integrity:
         print(
             f"crap4py mutation: working tree did not restore cleanly "
-            f"({len(rel_integrity)} file(s) re-restored: {', '.join(rel_integrity)}). "
+            f"({len(run.integrity)} file(s) re-restored: {', '.join(run.integrity)}). "
             "Treat this run as suspect and re-run.",
             file=sys.stderr,
         )
-    return _verdict(records, scan.uncovered, min_score, max_survivors, rel_integrity)
+    return _verdict(
+        run.records,
+        scan.uncovered,
+        min_score,
+        max_survivors,
+        run.integrity,
+        run.scoped,
+        run.confirmed,
+    )
 
 
 def _empty_summary(uncovered: int) -> str:
@@ -1075,15 +1310,28 @@ def _run_scanned(
     operators: tuple[str, ...],
     test_args: tuple[str, ...],
     use_cache: bool,
-) -> tuple[list[MutantRecord], tuple[str, ...]]:
-    """Open the cache (when enabled), execute every site; records + integrity paths."""
+    scope_tests: bool,
+) -> MutationRun:
+    """Open the cache (when enabled), execute every site; records + counters."""
     caching = _open_cache(root, operators, test_args, scan) if use_cache else None
-    records, integrity = run_mutants(str(root), scan.sites, timeout_seconds, runner, caching)
-    return records, _rel_paths(integrity, root)
+    test_args_for = _scoped_args(root, test_args) if scope_tests else None
+    return run_mutants(str(root), scan.sites, timeout_seconds, runner, caching, test_args_for)
 
 
-def _rel_paths(paths: Iterable[str], root: Path) -> tuple[str, ...]:
-    return tuple(_rel(Path(path), root) for path in paths)
+def _scoped_args(root: Path, test_args: tuple[str, ...]) -> Callable[[MutationSite], list[str]]:
+    """Per-site invocation resolver for ``scope_tests``.
+
+    Narrows each mutant's run to the derived test file of the mutated
+    file, falling back to the full ``test_args`` when no candidate exists
+    (upstream coalesces the fallback, so a fallback survivor is
+    re-confirmed against the very same full invocation).
+    """
+
+    def resolve(site: MutationSite) -> list[str]:
+        candidate = derived_test_file(site.file)
+        return [candidate] if (root / candidate).is_file() else list(test_args)
+
+    return resolve
 
 
 def _open_cache(
@@ -1118,24 +1366,43 @@ def _rel(path: Path, root: Path) -> str:
         return str(path)
 
 
+def _summary(
+    records: list[MutantRecord],
+    uncovered: int,
+    killed: int,
+    survived: int,
+    score: float,
+    integrity: tuple[str, ...],
+    scoped: int,
+    confirmed: int,
+) -> str:
+    """The one-line run summary: score, scoping counters, integrity note."""
+    cached = sum(1 for record in records if record.from_cache)
+    summary = (
+        f"score {score * 100:.1f}% "
+        f"({killed} killed, {survived} survived, {uncovered} uncovered, {cached} cached)"
+    )
+    if scoped > 0:
+        summary = f"{summary}; test-scoped {scoped} ({confirmed} re-confirmed killed)"
+    if integrity:
+        summary = f"{summary}; INTEGRITY: re-restored after run: {', '.join(integrity)}"
+    return summary
+
+
 def _verdict(
     records: list[MutantRecord],
     uncovered: int,
     min_score: float,
     max_survivors: int,
     integrity: tuple[str, ...] = (),
+    scoped: int = 0,
+    confirmed: int = 0,
 ) -> MutationResult:
     """Score = killed / (killed + survived); one violation per survivor."""
     killed = sum(1 for record in records if record.outcome == Killed)
     survived = len(records) - killed
-    cached = sum(1 for record in records if record.from_cache)
-    score = 1.0 if not records else killed / (killed + survived)
-    summary = (
-        f"score {score * 100:.1f}% "
-        f"({killed} killed, {survived} survived, {uncovered} uncovered, {cached} cached)"
-    )
-    if integrity:
-        summary = f"{summary}; INTEGRITY: re-restored after run: {', '.join(integrity)}"
+    score = killed / (killed + survived) if records else 1.0
+    summary = _summary(records, uncovered, killed, survived, score, integrity, scoped, confirmed)
     if score >= min_score and survived <= max_survivors:
         return MutationResult((), summary)
     return MutationResult(
@@ -1179,12 +1446,29 @@ def _load_coverage(args: argparse.Namespace, project_root: Path) -> dict[str, Fi
     return parse_coverage_dict(json.loads(coverage_path.read_text()), project_root)
 
 
+def _diff_arg(
+    args: argparse.Namespace, project_root: Path
+) -> tuple[dict[str, set[int]] | None, bool]:
+    """Changed lines for ``--diff-base``; ``(None, False)`` when absent.
+
+    A git failure reports to stderr and returns ``(None, True)`` — a
+    usage error, mirroring upstream's ``_loadDiff``.
+    """
+    if args.diff_base is None:
+        return None, False
+    diff = load_changed_lines(project_root, args.diff_base)
+    return diff, diff is None
+
+
 def run(argv: list[str], project_root: Path) -> int:
     """Entry point for ``crap4py mutation [options] [paths...]``. Exit 2 iff violations."""
     parser = _build_parser()
     args = parser.parse_args(argv)
     if any(arg == "" for arg in args.test_args):
         parser.error("--test-args: arguments must be non-empty strings")
+    diff, diff_failed = _diff_arg(args, project_root)
+    if diff_failed:
+        return 1
     files = (
         expand_paths(args.paths, project_root) if args.paths else find_source_files(project_root)
     )
@@ -1206,6 +1490,8 @@ def run(argv: list[str], project_root: Path) -> int:
         excludes=args.exclude,
         use_cache=args.cache,
         test_args=args.test_args,
+        diff=diff,
+        scope_tests=args.scope_tests,
     )
     return _print_result(result)
 
@@ -1273,6 +1559,26 @@ def _build_parser() -> UsageErrorParser:
             "extra per-mutant test command argument, repeatable, e.g. "
             "--test-args tests/test_analyzer.py to scope the suite "
             "(default: the whole suite)"
+        ),
+    )
+    parser.add_argument(
+        "--scope-tests",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "narrow each mutant's run to the derived test file of the mutated "
+            "file (tests/test_<module>.py); a scoped kill is cached, a scoped "
+            "survivor is re-confirmed against the full suite (default: off)"
+        ),
+    )
+    parser.add_argument(
+        "--diff-base",
+        default=None,
+        metavar="REF",
+        help=(
+            "diff-scoped execution: only execute mutants of methods "
+            "intersecting the lines changed vs this git ref (e.g. origin/main; "
+            "`git diff --unified=0 REF -- '*.py'`)"
         ),
     )
     parser.add_argument(

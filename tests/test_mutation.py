@@ -19,7 +19,9 @@ from crap4py.mutation import (
     Survived,
     Timeout,
     default_test_command,
+    derived_test_file,
     detect_sites,
+    parse_changed_lines,
     run,
     run_mutant_tests,
     run_mutants,
@@ -75,7 +77,7 @@ def _scan(root, coverage, **kwargs):
 
 
 def _killed_runner(calls=None):
-    def runner(root, timeout):
+    def runner(root, timeout, test_args):
         if calls is not None:
             calls.append(root)
         return Killed
@@ -84,7 +86,7 @@ def _killed_runner(calls=None):
 
 
 def _survived_runner(calls=None):
-    def runner(root, timeout):
+    def runner(root, timeout, test_args):
         if calls is not None:
             calls.append(root)
         return Survived
@@ -211,21 +213,21 @@ class EngineTest(unittest.TestCase):
             self._site("0", "Y", text.index("0"), text.index("0") + 1),
         ]
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             seen.append(self.path.read_text())
             return Killed
 
-        records, integrity = run_mutants(str(self.root), sites, 5, runner)
+        run = run_mutants(str(self.root), sites, 5, runner)
         self.assertEqual(seen, [text.replace("+", "X"), text.replace("0", "Y")])
         self.assertEqual(self.path.read_text(), text)
-        self.assertEqual([record.outcome for record in records], [Killed, Killed])
-        self.assertEqual(integrity, [])
+        self.assertEqual([record.outcome for record in run.records], [Killed, Killed])
+        self.assertEqual(run.integrity, [])
 
     def test_restores_when_runner_raises(self):
         text = self.path.read_text()
         site = self._site("+", "X", text.index("+"), text.index("+") + 1)
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             raise MutationUnavailable("python not found on PATH: no such file")
 
         with self.assertRaises(MutationUnavailable):
@@ -322,7 +324,7 @@ class GateVerdictTest(unittest.TestCase):
         self.assertIn("survivors by category: arithmetic=1, constant=1", result.summary)
 
     def test_timeouts_count_as_survived(self):
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             return Timeout
 
         result = _scan(self.root, self.coverage, runner=runner)
@@ -363,7 +365,7 @@ class GateVerdictTest(unittest.TestCase):
     def test_low_min_score_passes_with_a_lone_survivor(self):
         calls = []
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             calls.append(1)
             return Killed if len(calls) == 1 else Survived
 
@@ -404,12 +406,186 @@ class GateVerdictTest(unittest.TestCase):
         self.assertIn("no tests directory", result.summary)
 
     def test_skips_when_test_command_unavailable(self):
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             raise MutationUnavailable("python not found on PATH: no such file")
 
         result = _scan(self.root, self.coverage, runner=runner)
         self.assertEqual(result.violations, ())
         self.assertIn("skipped: python not found on PATH", result.summary)
+
+
+class ChangedLinesTest(unittest.TestCase):
+    """``parse_changed_lines``: the DiffLineMap git-diff parsing (upstream 8228585)."""
+
+    DIFF = (
+        "diff --git a/a.py b/a.py\n"
+        "index 111..222 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " keep\n"
+        "+added\n"
+        " keep\n"
+        " keep\n"
+        "@@ -10,2 +11,3 @@\n"
+        " keep\n"
+        "+one\n"
+        "+two\n"
+        "+three\n"
+        "diff --git a/gone.py b/gone.py\n"
+        "deleted file mode 100644\n"
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-bye\n"
+    )
+
+    def test_added_lines_of_new_paths_across_hunks(self):
+        self.assertEqual(parse_changed_lines(self.DIFF), {"a.py": {1, 2, 3, 4, 11, 12, 13}})
+
+    def test_deleted_files_are_absent(self):
+        self.assertNotIn("gone.py", parse_changed_lines(self.DIFF))
+
+    def test_single_line_hunk_without_count(self):
+        out = "--- a/m.py\n+++ b/m.py\n@@ -5 +5 @@\n+x\n"
+        self.assertEqual(parse_changed_lines(out), {"m.py": {5}})
+
+
+class DiffFilterTest(unittest.TestCase):
+    """Diff-scoped execution: only diff-intersecting methods execute (upstream 8228585)."""
+
+    def setUp(self):
+        self._tmp, self.root = _project()
+        self.coverage = _coverage(self.root, [2, 6])
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_only_methods_intersecting_the_diff_execute(self):
+        calls = []
+        result = _scan(self.root, self.coverage, runner=_killed_runner(calls), diff={"a.py": {2}})
+        self.assertEqual(len(calls), 1, "only add's mutant intersects the diff")
+        self.assertIn("1 killed", result.summary)
+        self.assertIn("0 survived", result.summary)
+
+    def test_sites_outside_the_diff_are_neither_executed_nor_counted(self):
+        calls = []
+        result = _scan(self.root, self.coverage, runner=_killed_runner(calls), diff={"a.py": set()})
+        self.assertEqual(calls, [])
+        self.assertEqual(result.summary, "no mutation sites")
+
+    def test_changed_line_outside_every_method_keeps_no_site(self):
+        # Lines 3-4 are the blank gap between the two functions: the site-line
+        # fallback (no containing method) finds no intersection.
+        calls = []
+        result = _scan(self.root, self.coverage, runner=_killed_runner(calls), diff={"a.py": {3}})
+        self.assertEqual(calls, [])
+        self.assertEqual(result.summary, "no mutation sites")
+
+    def test_module_level_site_uses_its_own_line(self):
+        (self.root / "a.py").write_text("X = 0\n")
+        coverage = _coverage(self.root, [1])
+        calls = []
+        hit = _scan(self.root, coverage, runner=_killed_runner(calls), diff={"a.py": {1}})
+        self.assertEqual(len(calls), 1, "the site's own line intersects the diff")
+        self.assertIn("1 killed", hit.summary)
+        miss = _scan(self.root, coverage, runner=_killed_runner(), diff={"a.py": {2}})
+        self.assertEqual(miss.summary, "no mutation sites")
+
+    def test_full_run_without_diff_keeps_every_site(self):
+        calls = []
+        result = _scan(self.root, self.coverage, runner=_killed_runner(calls), diff=None)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("2 killed", result.summary)
+
+
+class ScopeTestsTest(unittest.TestCase):
+    """scope_tests: per-mutant invocation narrowing + survivor re-confirmation."""
+
+    def setUp(self):
+        self._tmp, self.root = _project()
+        self.coverage = _coverage(self.root, [2, 6])
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _scoped_scan(self, runner, **kwargs):
+        return _scan(self.root, self.coverage, runner=runner, scope_tests=True, **kwargs)
+
+    def test_derived_test_file_follows_the_module_stem(self):
+        self.assertEqual(derived_test_file("a.py"), "tests/test_a.py")
+        self.assertEqual(derived_test_file("crap4py/mutation.py"), "tests/test_mutation.py")
+        self.assertEqual(derived_test_file("pkg/sub/mod.py"), "tests/test_mod.py")
+
+    def test_scoped_runs_use_the_derived_test_file(self):
+        seen = []
+        result = self._scoped_scan(lambda root, timeout, args: seen.append(args) or Killed)
+        self.assertEqual(seen, [["tests/test_a.py"], ["tests/test_a.py"]])
+        self.assertEqual(result.violations, ())
+        self.assertNotIn("test-scoped", result.summary, "kills are monotone, no confirmation")
+
+    def test_no_candidate_falls_back_to_test_args(self):
+        (self.root / "a.py").unlink()
+        (self.root / "b.py").write_text(FIXTURE)
+        seen = []
+        result = scan_files(
+            [self.root / "b.py"],
+            self.root,
+            _coverage(self.root, [2, 6], rel="b.py"),
+            runner=lambda root, timeout, args: seen.append(args) or Killed,
+            scope_tests=True,
+            test_args=("--slow",),
+        )
+        self.assertEqual(seen, [["--slow"], ["--slow"]], "no tests/test_b.py: full invocation")
+        self.assertIn("2 killed", result.summary)
+
+    def test_fallback_survivor_is_reconfirmed_against_the_same_invocation(self):
+        (self.root / "tests" / "test_a.py").unlink()  # no candidate test file
+        seen = []
+
+        def runner(root, timeout, args):
+            seen.append(args)
+            return Survived
+
+        result = self._scoped_scan(runner)
+        self.assertEqual(len(seen), 4, "two sites: scoped run + full-suite confirmation each")
+        self.assertEqual(seen, [(), (), (), ()], "no candidate: the full invocation, unchanged")
+        self.assertEqual(len(result.violations), 2)
+        self.assertIn("test-scoped 2 (0 re-confirmed killed)", result.summary)
+
+    def test_scoped_survivor_is_reconfirmed_once_and_only_confirmed_outcome_counts(self):
+        seq = [Survived, Killed, Killed]
+        seen = []
+
+        def runner(root, timeout, args):
+            seen.append(args)
+            return seq.pop(0)
+
+        result = self._scoped_scan(runner)
+        self.assertEqual(len(seen), 3, "the survivor re-ran once; the scoped kill did not")
+        self.assertEqual(result.violations, (), "the confirmation killed the mutant")
+        self.assertIn("2 killed", result.summary)
+        self.assertIn("test-scoped 1 (1 re-confirmed killed)", result.summary)
+
+    def test_scoped_timeout_survivor_is_also_reconfirmed(self):
+        seq = [Timeout, Killed, Killed]
+
+        def runner(root, timeout, args):
+            return seq.pop(0)
+
+        result = self._scoped_scan(runner)
+        self.assertEqual(result.violations, ())
+        self.assertIn("2 killed", result.summary)
+        self.assertIn("test-scoped 1 (1 re-confirmed killed)", result.summary)
+
+    def test_scope_tests_off_passes_the_full_invocation(self):
+        seen = []
+        _scan(
+            self.root,
+            self.coverage,
+            runner=lambda root, timeout, args: seen.append(args) or Killed,
+        )
+        self.assertEqual(seen, [(), ()])
 
 
 class EndToEndTest(unittest.TestCase):
@@ -526,6 +702,70 @@ class MutationCliTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 run(["--operator", "regex"], self.root)
         self.assertIn("invalid choice", err.getvalue())
+
+    def _git(self, *args):
+        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, text=True)
+
+    def _commit_all(self):
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "t@example.com")
+        self._git("config", "user.name", "t")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "init")
+
+    def test_diff_base_bad_ref_exits_1(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run(["--diff-base", "no-such-ref"], self.root)
+        self.assertEqual(code, 1)
+        self.assertIn("git diff failed", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
+    def test_diff_base_executes_only_changed_methods(self):
+        self._commit_all()
+        # Touch `add` only: its method range intersects the diff, `zero`'s does not.
+        text = (self.root / "a.py").read_text()
+        (self.root / "a.py").write_text(
+            text.replace("def add(a, b):\n", "def add(a, b):\n    # touched\n")
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = run(["--diff-base", "HEAD", "--timeout-seconds", "60"], self.root)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("1 killed", out.getvalue(), "only the changed method's mutant executed")
+        self.assertNotIn("2 killed", out.getvalue())
+
+    def test_scope_tests_narrows_to_the_derived_module_then_reconfirms(self):
+        # The derived file (tests/test_a.py) misses add's mutant but kills
+        # zero's; the non-derived tests/test_zzz.py kills both. The scoped
+        # first pass must therefore survive add's mutant (proving the
+        # invocation really was narrowed) and the full-suite confirmation
+        # must kill it — only the confirmed outcome is reported.
+        (self.root / "tests" / "test_a.py").write_text(
+            "import sys, pathlib\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n"
+            "import a\n"
+            "import unittest\n\n\n"
+            "class ATest(unittest.TestCase):\n"
+            "    def test_add(self):\n            a.add(2, 3)\n"
+            "    def test_zero(self):\n            self.assertEqual(a.zero(), 0)\n"
+        )
+        (self.root / "tests" / "test_zzz.py").write_text(
+            "import sys, pathlib\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n"
+            "import a\n"
+            "import unittest\n\n\n"
+            "class ZTest(unittest.TestCase):\n"
+            "    def test_add(self):\n            self.assertEqual(a.add(2, 3), 5)\n"
+            "    def test_zero(self):\n            self.assertEqual(a.zero(), 0)\n"
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = run(["--scope-tests", "--timeout-seconds", "60"], self.root)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("2 killed", out.getvalue())
+        self.assertIn("test-scoped 1 (1 re-confirmed killed)", out.getvalue())
+        self.assertIn("0 survived", out.getvalue())
 
     def test_plain_analyze_never_runs_mutants(self):
         # Disabled by default: plain `crap4py` analysis on the same project
