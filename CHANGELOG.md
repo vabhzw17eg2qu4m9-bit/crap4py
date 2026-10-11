@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.10.0...v0.11.0) (2026-10-11)
+
+
+### Features
+
+* **mutation:** diff-scoped execution + scope_tests — port of upstream crap4dart 8228585 ([#34](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/34)) ([f96f4d4](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/f96f4d49190f3f21bd00bf4c03688d8f5ba12d78))
+
 ## [0.10.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.9.0...v0.10.0) (2026-10-11)
 
 
