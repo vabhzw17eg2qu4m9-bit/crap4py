@@ -35,6 +35,7 @@ crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
 crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
 crap4py test-assertions [..] Flag test bodies without assertion calls.
 crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
+crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -47,7 +48,8 @@ Unknown flags → usage error (exit 1).
 
 Subcommands (`profile`, `skill`, `file-naming`, `nesting`, `class-size`,
 `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`,
-`magic-constants`, `test-assertions`, `folder-structure`, `duplicates`) are
+`magic-constants`, `test-assertions`, `folder-structure`, `duplicates`,
+`mutation`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -613,11 +615,91 @@ threshold exclusivity (`>` not `>=`), flag round-trips through `run()`
 (`--min-tokens`, `--threshold`), positional paths selecting the scan
 set, `--source` union with missing paths skipped, and `--exclude` globs.
 
-## 25. Non-goals
+## 25. `mutation`
+
+```
+crap4py mutation [--coverage PATH] [--min-score N] [--max-survivors N]
+                 [--timeout-seconds N] [--max-mutants N]
+                 [--operator CATEGORY]... [--exclude GLOB]... [paths...]
+```
+
+Mutation testing, port of the crap4dart `mutation` gate (upstream c865ec3,
+adapted from the unclebob/mutator research conclusions). A declarative,
+category-tagged operator table is matched on the parsed stdlib `ast` tree;
+replacement spans come from AST node positions plus stdlib `tokenize` token
+offsets — never regex:
+
+- `arithmetic`: `+`↔`-`, `*`↔`/`, `/`→`//`
+- `boundary`: `>`↔`>=`, `<`↔`<=`, `>`↔`<`, `>=`↔`<=`
+- `equality`: `==`↔`!=`
+- `logical`: `and`↔`or` (one site per adjacent value pair)
+- `boolean`: `True`↔`False`
+- `constant`: integer `0`↔`1` (by value, any lexeme), `-1`→`0` (whole span)
+- `unary`: delete a `not` prefix (the operand stays)
+
+Binary rows match `ast.BinOp`/`ast.Compare` operators; the Python AST gives
+operator nodes no positions, so the exact operator token is located as the
+single code token (comments, newlines and indentation excluded) between the
+operand spans — the tokenize-backed equivalent of upstream's analyzer token
+offsets. Asymmetric like upstream: `/` gains `//` as a mutant, but a `//`
+expression has no row (Dart `~/`). Each match is a mutation site
+`{file, line, method, category, original, mutant, start, end}`.
+
+A site whose containing function has no executed line — or whose line is
+recorded as missing when no function contains it (module-level code) — is
+`uncovered`: excluded from the score denominator and never executed. Every
+covered site is then mutated one at a time (one span replacement at its
+exact offsets) and the project's test command re-runs against it with a
+per-mutant timeout. A non-zero exit kills the mutant; an import/compile
+error is killed the same way, because the test command refuses to run. A
+timeout counts as survived: the suite did not kill the mutant
+deterministically. The file is restored after every mutant, also on
+timeouts and errors. Because CPython validates `.pyc` caches by source
+mtime (1-second granularity) and size — table mutants have the same size
+and run within the same second — the engine clears regenerable
+`__pycache__` directories once per run and executes the suite with
+`PYTHONDONTWRITEBYTECODE=1`, so a stale cache can never shadow one mutant
+with the previous mutant's bytecode.
+
+The test command is `[sys.executable, -m, pytest]` when pytest is
+importable, else `[sys.executable, -m, unittest, discover, -s tests]`
+(`-s test` for a `test/` directory) — the port's `dart test`/`flutter test`
+switch. The mutation score is `killed / (killed + survived)`; uncovered
+sites are excluded. The gate fails when the score is below `--min-score`
+(default 0.8) or when more than `--max-survivors` (default 0) mutants
+survive, and reports one violation per survived mutant:
+`<file>:<line>: survived <category> mutant `<original>` -> `<mutant>`[ in
+<method>]`. Without coverage data, without a `tests/` (or `test/`)
+directory, or when the test command cannot be spawned, the gate skips
+itself (exit 0 with a reason). `--timeout-seconds` (default 60) bounds each
+mutant, `--max-mutants` (default 500) caps the executed covered sites
+deterministically (file order, then offset), `--operator CATEGORY`
+(repeatable, one of `arithmetic boundary equality logical boolean constant
+unary`) selects an enabled subset, and `--exclude GLOB` (repeatable,
+fnmatch on project-relative paths) skips files. Pass summary:
+`score P% (K killed, S survived, U uncovered)`; the fail summary appends
+`survivors by category: <category=N, ...>`. The gate is disabled by
+default in the upstream sense: mutation testing never runs during plain
+analysis — it executes only when this subcommand is invoked. Exit `2` iff
+violations, `1` on usage errors.
+
+File selection: like every gate, explicit `paths` (files/dirs, expanded to
+`.py`) replace the default §4 selection; `--coverage` (default
+`coverage.json`) resolves relative to the project root and must be a
+coverage.py JSON report (§5).
+
+Regression-pinned by `tests/test_mutation.py`: operator-table rows and the
+`//` asymmetry, category filtering, site metadata (file/line/method),
+engine mutate-restore (including on runner errors), real-subprocess
+survived/killed/timeout/import-error verdicts, uncovered exclusion,
+skip conditions, `--max-mutants` cap, `--min-score`/`--max-survivors`
+interplay, violation file+line output, and plain-analysis never mutating.
+
+## 26. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
-- No mutation testing, no badges, no IDE plugins.
+- No badges, no IDE plugins.
 - No support for non-`.py` files or non-coverage.py formats.
 - No config file and no gate framework (crap4py is a flag-based single
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
