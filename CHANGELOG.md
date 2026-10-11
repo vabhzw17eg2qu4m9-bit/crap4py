@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.9.0...v0.10.0) (2026-10-11)
+
+
+### Features
+
+* **mutation:** digest-incremental cache + test_args scoping + tree-integrity check — port of upstream crap4dart 16d9c4c+8b2e8e8 ([#32](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/32)) ([3a65e69](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/3a65e69f71702d5b6bfcae4c75dacb36c632af7b))
+
 ## [0.9.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.8.0...v0.9.0) (2026-10-11)
 
 
