@@ -620,7 +620,8 @@ set, `--source` union with missing paths skipped, and `--exclude` globs.
 ```
 crap4py mutation [--coverage PATH] [--min-score N] [--max-survivors N]
                  [--timeout-seconds N] [--max-mutants N]
-                 [--operator CATEGORY]... [--exclude GLOB]... [paths...]
+                 [--operator CATEGORY]... [--exclude GLOB]...
+                 [--cache/--no-cache] [--test-args ARG]... [paths...]
 ```
 
 Mutation testing, port of the crap4dart `mutation` gate (upstream c865ec3,
@@ -677,11 +678,44 @@ deterministically (file order, then offset), `--operator CATEGORY`
 (repeatable, one of `arithmetic boundary equality logical boolean constant
 unary`) selects an enabled subset, and `--exclude GLOB` (repeatable,
 fnmatch on project-relative paths) skips files. Pass summary:
-`score P% (K killed, S survived, U uncovered)`; the fail summary appends
-`survivors by category: <category=N, ...>`. The gate is disabled by
+`score P% (K killed, S survived, U uncovered, C cached)`; the fail summary
+appends `survivors by category: <category=N, ...>`. The gate is disabled by
 default in the upstream sense: mutation testing never runs during plain
 analysis — it executes only when this subcommand is invoked. Exit `2` iff
 violations, `1` on usage errors.
+
+Digest-incremental cache (port of upstream 16d9c4c): when `--cache` is on
+(default), the gate loads `.crap-mutation-cache.json` from the project root
+and binds every covered site inside a function to that function's cache
+identity — the key `<rel>#<qualified name>` plus the FNV-1a (64-bit state,
+output-masked to 63 bits, 16 hex chars — zero dependencies, stable across
+platforms) digest of the function's exact source text. Killed mutants of
+digest-unchanged methods are replayed as killed without executing
+(`C cached` in the summary); survivors always re-execute, and coverage
+gating is re-derived from the fresh report every run. Site offsets are
+stored method-relative (relative to the function's start), so an edit in an
+earlier method of the same file invalidates only that method's sites. The
+envelope carries a meta guard — tool version, sorted enabled operators,
+comma-joined `--test-args` — and any mismatch, a version mismatch, a corrupt
+file, or a missing file starts from an empty cache (full re-execution).
+Methods absent from the scanned scope (deleted or excluded files) are
+pruned; sites outside every function are never cached. The merged cache is
+persisted after the run; the file is disposable build output and
+gitignored. `--no-cache` disables load/merge entirely. `--test-args ARG`
+(repeatable) appends arguments to the per-mutant test command — scoping the
+suite is the caller's responsibility: a mutant is killed only if the scoped
+suite would kill it. Empty `--test-args` values are usage errors (exit 1),
+matching upstream's strict validation.
+
+End-of-run tree integrity check (port of upstream 8b2e8e8): the engine
+snapshots every file it is about to mutate before the mutant loop and, in
+an outer `finally`, re-verifies the whole tree against those snapshots
+even when the loop dies mid-mutant. A per-site restore can be defeated
+out-of-process (external write, killed interpreter), so any drift is
+re-restored AND surfaced: `INTEGRITY: re-restored after run: <files>` in
+the summary plus a stderr warning (`working tree did not restore cleanly …
+Treat this run as suspect and re-run`). An empty violation list is the
+healthy case and stays silent.
 
 File selection: like every gate, explicit `paths` (files/dirs, expanded to
 `.py`) replace the default §4 selection; `--coverage` (default
@@ -694,6 +728,13 @@ engine mutate-restore (including on runner errors), real-subprocess
 survived/killed/timeout/import-error verdicts, uncovered exclusion,
 skip conditions, `--max-mutants` cap, `--min-score`/`--max-survivors`
 interplay, violation file+line output, and plain-analysis never mutating.
+`tests/test_mutation_cache.py` pins the digest cache and the integrity
+check: cold/warm equivalence (zero runner calls on replay), survivors
+always re-executing, method-relative invalidation, operator and
+`--test-args` meta-guard wipes, version/corruption resets, pruning of
+vanished methods, cross-file keying, module-level sites never cached,
+out-of-band mutation self-heal, byte-identical trees on success and
+mid-loop exceptions, and `--test-args` scoping/validation.
 
 ## 26. Non-goals
 

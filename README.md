@@ -154,7 +154,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization (below). |
-| `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
+| `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -204,6 +204,27 @@ shadow mutants (pyc validation is mtime+size, and same-sized mutants land
 in the same second). Expensive, and therefore never part of plain analysis:
 `mutation` runs only when invoked. Requires `coverage.json` and a `tests/`
 (or `test/`) directory; otherwise it skips with a reason (exit 0).
+
+Digest-incremental cache (port of crap4dart 16d9c4c): `.crap-mutation-cache.json`
+at the project root remembers each method's source-span digest (FNV-1a of the
+exact function text) and the per-site outcomes of the last run that executed
+it. Killed mutants of unchanged methods are replayed, not re-executed;
+survivors always re-run (the suite may have improved) and coverage gating is
+re-derived from the fresh report every run. Offsets are stored method-relative,
+so an edit in an earlier method of the same file invalidates only that method;
+a tool-version/operator/`--test-args` mismatch wipes the whole cache. The cache
+file is disposable build output (gitignored). `--no-cache` opts out.
+`--test-args ARG` (repeatable) appends arguments to the per-mutant test command
+(e.g. `--test-args tests/test_analyzer.py`) to scope the suite on big repos —
+scoping is your responsibility: a mutant is killed only if the scoped suite
+would kill it.
+
+End-of-run tree integrity check (port of crap4dart 8b2e8e8): the engine
+snapshots every file it will mutate before the loop and re-verifies the whole
+tree in an outer `finally` — a per-site restore can be defeated out-of-process
+(external write, killed interpreter), so any drift is re-restored AND surfaced
+as `INTEGRITY: re-restored after run: <files>` in the summary plus a stderr
+warning telling you to treat the run as suspect.
 
 crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
 per-path threshold entries, yaml config, baselines) are not ported — ports

@@ -10,10 +10,17 @@ errors included, because the test command refuses to run), a clean pass
 means the mutant survived, and a timeout counts as survived. Sites in
 unexecuted code are excluded from the score. Expensive — the gate is an
 explicit opt-in subcommand and never part of plain analysis.
+
+A digest-incremental cache (``.crap-mutation-cache.json``) replays killed
+mutants of methods whose source-span digest is unchanged (survivors always
+re-execute; a tool/operator/test_args change wipes the cache), and an
+end-of-run integrity check re-verifies every mutated file against its
+pre-run snapshot, re-restoring and reporting any out-of-band drift.
 """
 
 from __future__ import annotations
 
+import argparse
 import ast
 import fnmatch
 import importlib.util
@@ -29,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+from . import __version__
 from .args import UsageErrorParser
 from .complexity import extract_methods
 from .coverage import FileCoverage, parse_coverage_dict
@@ -38,6 +46,12 @@ MIN_SCORE = 0.8
 MAX_SURVIVORS = 0
 TIMEOUT_SECONDS = 60
 MAX_MUTANTS = 500
+
+#: Digest-incremental cache file, written under the project root.
+MUTATION_CACHE_FILE = ".crap-mutation-cache.json"
+
+#: Cache envelope version; a mismatch discards the file.
+MUTATION_CACHE_VERSION = 1
 
 #: Operator categories of the ``mutation`` gate, in stable order (upstream's
 #: ``mutationOperatorCategories``).
@@ -109,6 +123,248 @@ class MutationUnavailable(Exception):
     """The per-mutant test command could not be spawned at all."""
 
 
+def fnv1a64_hex(text: str) -> str:
+    """FNV-1a over 64-bit state, output-masked to 63 bits, as 16 hex chars.
+
+    Zero dependencies, stable across platforms and runs (upstream parity:
+    the mask keeps the digest a positive 64-bit-safe integer).
+    """
+    digest = 0xCBF29CE484222325
+    for byte in text.encode():
+        digest = ((digest ^ byte) * 0x1000001B3) & 0x7FFFFFFFFFFFFFFF
+    return f"{digest:016x}"
+
+
+@dataclass(frozen=True, slots=True)
+class MethodRef:
+    """Cache identity of one method: key, source-span digest, start offset.
+
+    Site offsets are stored relative to ``start``, so an edit in an earlier
+    method of the same file invalidates only that method's sites.
+    """
+
+    key: str
+    digest: str
+    start: int
+
+
+@dataclass(frozen=True, slots=True)
+class MutationCacheMeta:
+    """Mutation-relevant config fingerprint stored in the cache envelope.
+
+    Any mismatch wipes the cache (full re-execution) because cached
+    outcomes were produced under different semantics.
+    """
+
+    tool: str
+    operators: str
+    test_args: str
+
+    @classmethod
+    def current(cls, operators: Iterable[str], test_args: Iterable[str]) -> MutationCacheMeta:
+        return cls(
+            tool=f"crap4py {__version__}",
+            operators=",".join(sorted(operators)),
+            test_args=",".join(test_args),
+        )
+
+    def to_dict(self) -> dict:
+        return {"tool": self.tool, "operators": self.operators, "test_args": self.test_args}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MutationCacheMeta:
+        return cls(
+            tool=data.get("tool") or "",
+            operators=data.get("operators") or "",
+            test_args=data.get("test_args") or "",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CachedOutcome:
+    """One cached per-site outcome; ``offset`` is relative to the method start."""
+
+    offset: int
+    line: int
+    category: str
+    original: str
+    mutant: str
+    status: str
+
+    def matches(self, offset: int, category: str, original: str, mutant: str) -> bool:
+        """Whether this outcome sits at the given site (same span and replacement)."""
+        return (
+            self.offset == offset
+            and self.category == category
+            and self.original == original
+            and self.mutant == mutant
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "offset": self.offset,
+            "line": self.line,
+            "category": self.category,
+            "original": self.original,
+            "mutant": self.mutant,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CachedOutcome:
+        # Malformed fields fall back to values that can never replay (offset -1).
+        return cls(
+            offset=data.get("offset", -1),
+            line=data.get("line", 0),
+            category=data.get("category", ""),
+            original=data.get("original", ""),
+            mutant=data.get("mutant", ""),
+            status=data.get("status", ""),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CachedMethod:
+    """Cached outcomes of one method, keyed by :meth:`MutationCache.methods_key`."""
+
+    digest: str
+    outcomes: tuple[CachedOutcome, ...]
+
+
+class MutationCache:
+    """Digest-incremental killed-stays-killed cache.
+
+    Per-method outcomes keyed by source-text digest: only ``killed``
+    outcomes are replayable; survivors are always re-executed.
+    """
+
+    def __init__(
+        self, meta: MutationCacheMeta, methods: dict[str, CachedMethod] | None = None
+    ) -> None:
+        self.meta = meta
+        self.methods: dict[str, CachedMethod] = methods if methods is not None else {}
+
+    @staticmethod
+    def methods_key(rel_path: str, method_name: str) -> str:
+        """Stable cache key: relative file path plus the qualified method name."""
+        return f"{rel_path}#{method_name}"
+
+    def replay_kill(self, ref: MethodRef, site: MutationSite) -> CachedOutcome | None:
+        """The cached killed outcome matching ``site``, or ``None`` (must execute).
+
+        ``None`` means changed method, unknown site, or a survivor. Stored
+        offsets are method-relative, so ``ref`` supplies the base.
+        """
+        method = self.methods.get(ref.key)
+        if method is None or method.digest != ref.digest:
+            return None
+        base = site.start - ref.start
+        for outcome in method.outcomes:
+            if outcome.status == Killed and outcome.matches(
+                base, site.category, site.original, site.mutant
+            ):
+                return outcome
+        return None
+
+    def merge_run(
+        self, fresh: dict[str, tuple[str, list[CachedOutcome]]], live_keys: set[str]
+    ) -> None:
+        """Merge one run's outcomes: prune vanished methods, keep unsuperseded old ones."""
+        self.methods = {k: v for k, v in self.methods.items() if k in live_keys}
+        for key, (digest, outcomes) in fresh.items():
+            old = self.methods.get(key)
+            kept = [] if old is None else [o for o in old.outcomes if not _superseded(o, outcomes)]
+            self.methods[key] = CachedMethod(digest, tuple(outcomes) + tuple(kept))
+
+    def to_dict(self) -> dict:
+        return {
+            "version": MUTATION_CACHE_VERSION,
+            "meta": self.meta.to_dict(),
+            "methods": {
+                key: {
+                    "digest": method.digest,
+                    "outcomes": [outcome.to_dict() for outcome in method.outcomes],
+                }
+                for key, method in self.methods.items()
+            },
+        }
+
+    def save(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load(cls, path: Path, meta: MutationCacheMeta) -> MutationCache:
+        """Load the cache at ``path`` under ``meta``.
+
+        A missing, corrupt, outdated or meta-mismatched file yields an
+        empty cache — a full re-execution under the current semantics.
+        """
+        try:
+            decoded = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return cls(meta)
+        if not isinstance(decoded, dict) or decoded.get("version") != MUTATION_CACHE_VERSION:
+            return cls(meta)
+        stored = MutationCacheMeta.from_dict(decoded.get("meta") or {})
+        if stored != meta:
+            return cls(meta)
+        return cls(meta, _read_methods(decoded.get("methods")))
+
+
+def _read_methods(raw: object) -> dict[str, CachedMethod]:
+    if not isinstance(raw, dict):
+        return {}
+    methods: dict[str, CachedMethod] = {}
+    for key, entry in raw.items():
+        if isinstance(key, str) and isinstance(entry, dict):
+            outcomes = entry.get("outcomes")
+            methods[key] = CachedMethod(
+                entry.get("digest", ""),
+                tuple(
+                    CachedOutcome.from_dict(outcome)
+                    for outcome in (outcomes if isinstance(outcomes, list) else ())
+                    if isinstance(outcome, dict)
+                ),
+            )
+    return methods
+
+
+def _superseded(old: CachedOutcome, fresh: list[CachedOutcome]) -> bool:
+    return any(
+        fresh_outcome.matches(old.offset, old.category, old.original, old.mutant)
+        for fresh_outcome in fresh
+    )
+
+
+class CacheSession(NamedTuple):
+    """Everything the engine needs to consult and update the on-disk cache."""
+
+    cache: MutationCache
+    cache_file: Path
+    #: Cache identity of every site inside an extracted method; sites
+    #: outside methods are never cached.
+    site_methods: dict[MutationSite, MethodRef]
+    #: Keys of every method in the scanned scope — used for pruning.
+    live_keys: set[str]
+
+
+class MutantRecord(NamedTuple):
+    """One site's outcome and whether the kill was replayed from the cache."""
+
+    site: MutationSite
+    outcome: str
+    from_cache: bool
+
+
+class MutationScan(NamedTuple):
+    """Covered sites for one run plus the cache identities bound to them."""
+
+    sites: list[MutationSite]
+    uncovered: int
+    site_methods: dict[MutationSite, MethodRef]
+    live_keys: set[str]
+
+
 @dataclass(frozen=True, slots=True)
 class MutationSite:
     """One place where one operator replacement applies.
@@ -178,17 +434,22 @@ class _Source(NamedTuple):
         return None
 
 
+def _line_starts(text: str) -> list[int]:
+    """Char offset where each 1-based line starts, plus an end sentinel."""
+    starts, off = [0], 0
+    for line in text.splitlines(keepends=True):
+        off += len(line)
+        starts.append(off)
+    return starts
+
+
 def _source(text: str) -> _Source:
     tokens = [
         t
         for t in tokenize.generate_tokens(io.StringIO(text).readline)
         if t.type not in _TOKENIZE_NOISE
     ]
-    starts, off = [0], 0
-    for line in text.splitlines(keepends=True):
-        off += len(line)
-        starts.append(off)
-    return _Source(text, starts, tokens)
+    return _Source(text, _line_starts(text), tokens)
 
 
 def _mutants_for(lexeme: str, categories: Iterable[str]) -> list[tuple[str, str]]:
@@ -504,22 +765,30 @@ def _is_covered(site: MutationSite, coverage: FileCoverage | None, methods: list
     return site.line not in coverage.missing_lines
 
 
-def default_test_command(project_root: str) -> list[str]:
-    """The per-mutant test command: pytest when importable, unittest otherwise."""
+def default_test_command(project_root: str, test_args: Iterable[str] = ()) -> list[str]:
+    """The per-mutant test command: pytest when importable, unittest otherwise.
+
+    ``test_args`` scopes the run (e.g. ``["tests/test_analyzer.py"]``);
+    the default runs the whole suite. Scoping is the caller's
+    responsibility: a mutant is killed only if the scoped suite would
+    kill it.
+    """
     if importlib.util.find_spec("pytest") is not None:
-        return [sys.executable, "-m", "pytest"]
+        return [sys.executable, "-m", "pytest", *test_args]
     base = "tests" if (Path(project_root) / "tests").is_dir() else "test"
-    return [sys.executable, "-m", "unittest", "discover", "-s", base]
+    return [sys.executable, "-m", "unittest", "discover", "-s", base, *test_args]
 
 
-def run_mutant_tests(project_root: str, timeout_seconds: int, spawn=None) -> str:
+def run_mutant_tests(
+    project_root: str, timeout_seconds: int, spawn=None, test_args: Iterable[str] = ()
+) -> str:
     """Run the project's test suite once, killing it when it outlives the timeout.
 
     A non-zero exit kills the mutant (import/compile errors included); a
     clean pass means the mutant survived; a timeout counts as survived.
     """
     spawn = spawn or subprocess.Popen
-    cmd = default_test_command(project_root)
+    cmd = default_test_command(project_root, test_args)
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     try:
         proc = spawn(
@@ -558,23 +827,118 @@ def run_mutants(
     sites: list[MutationSite],
     timeout_seconds: int,
     runner: MutantRunner | None = None,
-) -> list[tuple[MutationSite, str]]:
-    """Mutate every site one at a time, run the tests, restore the file."""
+    caching: CacheSession | None = None,
+) -> tuple[list[MutantRecord], list[str]]:
+    """Mutate every site one at a time, run the tests, restore the file.
+
+    With ``caching``, killed mutants of digest-unchanged methods replay
+    from the cache instead of executing; survivors always re-execute, and
+    the merged cache is persisted after the run. Returns the per-site
+    records plus the integrity violations (files the end-of-run check had
+    to re-restore — empty when the tree healed trivially).
+    """
     runner = runner or run_mutant_tests
-    outcomes: list[tuple[MutationSite, str]] = []
     root = Path(project_root)
     _clear_pycache(root)
+    originals = _snapshot_originals(root, sites)
+    fresh: dict[str, tuple[str, list[CachedOutcome]]] = {}
+    records: list[MutantRecord] = []
+    try:
+        for site in sites:
+            records.append(_run_site(root, site, timeout_seconds, runner, caching, fresh))
+    finally:
+        # End-of-run integrity check: restore any file that does not match
+        # its snapshot, even when the loop died mid-mutant. A per-site
+        # finally-restore can be defeated out-of-process (external write,
+        # killed interpreter); silent tree corruption must become a loud,
+        # self-healing error instead.
+        violations = _verify_integrity(originals)
+    _persist(caching, fresh)
+    return records, violations
+
+
+def _run_site(
+    root: Path,
+    site: MutationSite,
+    timeout_seconds: int,
+    runner: MutantRunner,
+    caching: CacheSession | None,
+    fresh: dict[str, tuple[str, list[CachedOutcome]]],
+) -> MutantRecord:
+    ref = caching.site_methods.get(site) if caching else None
+    replayed = caching.cache.replay_kill(ref, site) if ref is not None else None
+    if replayed is not None:
+        _accumulate(fresh, ref, replayed)
+        return MutantRecord(site, Killed, True)
+    outcome = _execute_site(root, site, timeout_seconds, runner)
+    if ref is not None:
+        _accumulate(fresh, ref, _cached_outcome(site, outcome, ref))
+    return MutantRecord(site, outcome, False)
+
+
+def _execute_site(
+    root: Path, site: MutationSite, timeout_seconds: int, runner: MutantRunner
+) -> str:
+    path = root / site.file
+    original = path.read_text()
+    path.write_text(site.apply_to(original))
+    try:
+        return runner(str(root), timeout_seconds)
+    finally:
+        # Always restore the file, also after timeouts and errors.
+        path.write_text(original)
+
+
+def _snapshot_originals(root: Path, sites: list[MutationSite]) -> dict[Path, str]:
+    """The pre-run content of every file ``sites`` touch."""
+    originals: dict[Path, str] = {}
     for site in sites:
         path = root / site.file
-        original = path.read_text()
-        path.write_text(site.apply_to(original))
-        try:
-            outcome = runner(str(root), timeout_seconds)
-        finally:
-            # Always restore the file, also after timeouts and errors.
+        if path not in originals:
+            originals[path] = path.read_text()
+    return originals
+
+
+def _verify_integrity(originals: dict[Path, str]) -> list[str]:
+    """Re-restores any file that drifted from its snapshot; returns those paths.
+
+    Empty when every file is byte-identical to the snapshot (the healthy case).
+    """
+    violations = []
+    for path, original in originals.items():
+        if path.read_text() != original:
             path.write_text(original)
-        outcomes.append((site, outcome))
-    return outcomes
+            violations.append(str(path))
+    return violations
+
+
+def _accumulate(
+    fresh: dict[str, tuple[str, list[CachedOutcome]]], ref: MethodRef, outcome: CachedOutcome
+) -> None:
+    digest, outcomes = fresh.get(ref.key, (ref.digest, []))
+    outcomes.append(outcome)
+    fresh[ref.key] = (digest, outcomes)
+
+
+def _cached_outcome(site: MutationSite, outcome: str, ref: MethodRef) -> CachedOutcome:
+    """Site outcome with the offset made method-relative (stable across edits elsewhere)."""
+    return CachedOutcome(
+        offset=site.start - ref.start,
+        line=site.line,
+        category=site.category,
+        original=site.original,
+        mutant=site.mutant,
+        status=outcome,
+    )
+
+
+def _persist(
+    caching: CacheSession | None, fresh: dict[str, tuple[str, list[CachedOutcome]]]
+) -> None:
+    if caching is None:
+        return
+    caching.cache.merge_run(fresh, caching.live_keys)
+    caching.cache.save(caching.cache_file)
 
 
 def _covered_sites(
@@ -583,29 +947,75 @@ def _covered_sites(
     coverage: dict[str, FileCoverage],
     max_mutants: int,
     categories: Iterable[str],
-) -> tuple[list[MutationSite], int]:
+) -> MutationScan:
     """Detect sites in every file and keep the covered ones, capped at
-    ``max_mutants`` (file order, then offset — the cap is deterministic)."""
+    ``max_mutants`` (file order, then offset — the cap is deterministic).
+
+    Every file's methods become live cache keys (the cap only limits
+    executed sites), and each kept site inside a function is bound to
+    that function's cache identity.
+    """
     covered: list[MutationSite] = []
+    site_methods: dict[MutationSite, MethodRef] = {}
+    live_keys: set[str] = set()
     uncovered = 0
     for path in files:
-        if len(covered) >= max_mutants:
+        found = _scan_file(path, root, coverage, max_mutants - len(covered), categories, live_keys)
+        covered.extend(found.sites)
+        site_methods.update(found.site_methods)
+        uncovered += found.uncovered
+    return MutationScan(covered, uncovered, site_methods, live_keys)
+
+
+def _scan_file(
+    path: Path,
+    root: Path,
+    coverage: dict[str, FileCoverage],
+    budget: int,
+    categories: Iterable[str],
+    live_keys: set[str],
+) -> MutationScan:
+    """The covered sites (up to ``budget``) of one file, each bound to its method.
+
+    Every method of the file becomes a live cache key regardless of the
+    budget — the cap only limits executed sites, never cache pruning.
+    """
+    rel = _rel(path, root)
+    tree = parse_file(path)
+    if tree is None:
+        return MutationScan([], 0, {}, set())
+    text = path.read_text()
+    methods = extract_methods(text, rel)
+    live_keys.update(MutationCache.methods_key(rel, method.name) for method in methods)
+    file_coverage = coverage.get(rel)
+    starts = _line_starts(text)
+    sites: list[MutationSite] = []
+    site_methods: dict[MutationSite, MethodRef] = {}
+    uncovered = 0
+    for site in detect_sites(tree, text, rel, categories):
+        if len(sites) >= budget:
             break
-        rel = _rel(path, root)
-        tree = parse_file(path)
-        if tree is None:
+        if not _is_covered(site, file_coverage, methods):
+            uncovered += 1
             continue
-        text = path.read_text()
-        methods = extract_methods(text, rel)
-        file_coverage = coverage.get(rel)
-        for site in detect_sites(tree, text, rel, categories):
-            if len(covered) >= max_mutants:
-                break
-            if _is_covered(site, file_coverage, methods):
-                covered.append(site)
-            else:
-                uncovered += 1
-    return covered, uncovered
+        sites.append(site)
+        ref = _method_ref(rel, text, starts, methods, site)
+        if ref is not None:
+            site_methods[site] = ref
+    return MutationScan(sites, uncovered, site_methods, set())
+
+
+def _method_ref(
+    rel: str, text: str, starts: list[int], methods: list, site: MutationSite
+) -> MethodRef | None:
+    """The cache identity of the method containing ``site``; None outside functions."""
+    method = _containing(methods, site.line)
+    if method is None:
+        return None
+    start = starts[method.start_line - 1]
+    end = starts[method.end_line] if method.end_line < len(starts) else len(text)
+    digest = fnv1a64_hex(text[start:end])
+    return MethodRef(MutationCache.methods_key(rel, method.name), digest, start)
 
 
 def scan_files(
@@ -620,6 +1030,8 @@ def scan_files(
     operators: Iterable[str] = CATEGORIES,
     excludes: Iterable[str] = (),
     runner: MutantRunner | None = None,
+    use_cache: bool = True,
+    test_args: Iterable[str] = (),
 ) -> MutationResult:
     """Gate core: detect covered sites, mutate one at a time, report survivors."""
     if coverage is None:
@@ -628,19 +1040,62 @@ def scan_files(
         return MutationResult((), "skipped: no tests directory")
     root = Path(project_root)
     selected = _select(files, root, excludes)
-    sites, uncovered = _covered_sites(selected, root, coverage, max_mutants, tuple(operators))
-    if not sites:
-        summary = (
-            "no mutation sites"
-            if uncovered == 0
-            else f"no covered mutation sites ({uncovered} uncovered)"
-        )
-        return MutationResult((), summary)
+    scan = _covered_sites(selected, root, coverage, max_mutants, tuple(operators))
+    if not scan.sites:
+        return MutationResult((), _empty_summary(scan.uncovered))
     try:
-        outcomes = run_mutants(str(root), sites, timeout_seconds, runner)
+        records, rel_integrity = _run_scanned(
+            root, scan, timeout_seconds, runner, tuple(operators), tuple(test_args), use_cache
+        )
     except MutationUnavailable as exc:
         return MutationResult((), f"skipped: {exc}")
-    return _verdict(outcomes, uncovered, min_score, max_survivors)
+    if rel_integrity:
+        print(
+            f"crap4py mutation: working tree did not restore cleanly "
+            f"({len(rel_integrity)} file(s) re-restored: {', '.join(rel_integrity)}). "
+            "Treat this run as suspect and re-run.",
+            file=sys.stderr,
+        )
+    return _verdict(records, scan.uncovered, min_score, max_survivors, rel_integrity)
+
+
+def _empty_summary(uncovered: int) -> str:
+    return (
+        "no mutation sites"
+        if uncovered == 0
+        else f"no covered mutation sites ({uncovered} uncovered)"
+    )
+
+
+def _run_scanned(
+    root: Path,
+    scan: MutationScan,
+    timeout_seconds: int,
+    runner: MutantRunner | None,
+    operators: tuple[str, ...],
+    test_args: tuple[str, ...],
+    use_cache: bool,
+) -> tuple[list[MutantRecord], tuple[str, ...]]:
+    """Open the cache (when enabled), execute every site; records + integrity paths."""
+    caching = _open_cache(root, operators, test_args, scan) if use_cache else None
+    records, integrity = run_mutants(str(root), scan.sites, timeout_seconds, runner, caching)
+    return records, _rel_paths(integrity, root)
+
+
+def _rel_paths(paths: Iterable[str], root: Path) -> tuple[str, ...]:
+    return tuple(_rel(Path(path), root) for path in paths)
+
+
+def _open_cache(
+    root: Path,
+    operators: tuple[str, ...],
+    test_args: tuple[str, ...],
+    scan: MutationScan,
+) -> CacheSession:
+    """Load the digest cache at the project root (empty on any mismatch), bound to the scan."""
+    cache_file = root / MUTATION_CACHE_FILE
+    cache = MutationCache.load(cache_file, MutationCacheMeta.current(operators, test_args))
+    return CacheSession(cache, cache_file, scan.site_methods, scan.live_keys)
 
 
 def _select(files: Iterable[PathLike], root: Path, excludes: Iterable[str]) -> list[Path]:
@@ -664,30 +1119,40 @@ def _rel(path: Path, root: Path) -> str:
 
 
 def _verdict(
-    outcomes: list[tuple[MutationSite, str]],
+    records: list[MutantRecord],
     uncovered: int,
     min_score: float,
     max_survivors: int,
+    integrity: tuple[str, ...] = (),
 ) -> MutationResult:
     """Score = killed / (killed + survived); one violation per survivor."""
-    killed = sum(1 for _, outcome in outcomes if outcome == Killed)
-    survived = len(outcomes) - killed
-    score = 1.0 if not outcomes else killed / (killed + survived)
+    killed = sum(1 for record in records if record.outcome == Killed)
+    survived = len(records) - killed
+    cached = sum(1 for record in records if record.from_cache)
+    score = 1.0 if not records else killed / (killed + survived)
     summary = (
-        f"score {score * 100:.1f}% ({killed} killed, {survived} survived, {uncovered} uncovered)"
+        f"score {score * 100:.1f}% "
+        f"({killed} killed, {survived} survived, {uncovered} uncovered, {cached} cached)"
     )
+    if integrity:
+        summary = f"{summary}; INTEGRITY: re-restored after run: {', '.join(integrity)}"
     if score >= min_score and survived <= max_survivors:
         return MutationResult((), summary)
-    violations = tuple(
-        MutationViolation(
-            file=site.file,
-            line=site.line,
-            message=_survivor_message(site),
-        )
-        for site, outcome in outcomes
-        if outcome != Killed
+    return MutationResult(
+        _survivor_violations(records), f"{summary}; {_survivors_by_category(records)}"
     )
-    return MutationResult(violations, f"{summary}; {_survivors_by_category(outcomes)}")
+
+
+def _survivor_violations(records: list[MutantRecord]) -> tuple[MutationViolation, ...]:
+    return tuple(
+        MutationViolation(
+            file=record.site.file,
+            line=record.site.line,
+            message=_survivor_message(record.site),
+        )
+        for record in records
+        if record.outcome != Killed
+    )
 
 
 def _survivor_message(site: MutationSite) -> str:
@@ -695,30 +1160,40 @@ def _survivor_message(site: MutationSite) -> str:
     return f"survived {site.category} mutant `{site.original}` -> `{site.mutant}`{method}"
 
 
-def _survivors_by_category(outcomes: list[tuple[MutationSite, str]]) -> str:
+def _survivors_by_category(records: list[MutantRecord]) -> str:
     counts: dict[str, int] = {}
-    for site, outcome in outcomes:
-        if outcome != Killed:
-            counts[site.category] = counts.get(site.category, 0) + 1
+    for record in records:
+        if record.outcome != Killed:
+            counts[record.site.category] = counts.get(record.site.category, 0) + 1
     detail = ", ".join(f"{name}={counts[name]}" for name in sorted(counts))
     return f"survivors by category: {detail}"
 
 
-def run(argv: list[str], project_root: Path) -> int:
-    """Entry point for ``crap4py mutation [options] [paths...]``. Exit 2 iff violations."""
-    args = _build_parser().parse_args(argv)
-    files = (
-        expand_paths(args.paths, project_root) if args.paths else find_source_files(project_root)
-    )
+def _load_coverage(args: argparse.Namespace, project_root: Path) -> dict[str, FileCoverage] | None:
+    """The parsed coverage report, or ``None`` when the file is missing (gate skips)."""
     coverage_path = Path(args.coverage)
     if not coverage_path.is_absolute():
         coverage_path = project_root / coverage_path
     if not coverage_path.exists():
+        return None
+    return parse_coverage_dict(json.loads(coverage_path.read_text()), project_root)
+
+
+def run(argv: list[str], project_root: Path) -> int:
+    """Entry point for ``crap4py mutation [options] [paths...]``. Exit 2 iff violations."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if any(arg == "" for arg in args.test_args):
+        parser.error("--test-args: arguments must be non-empty strings")
+    files = (
+        expand_paths(args.paths, project_root) if args.paths else find_source_files(project_root)
+    )
+    coverage = _load_coverage(args, project_root)
+    if coverage is None:
         print(
             "skipped: no coverage data (generate coverage.json first, e.g. `crap4py --run-tests`)"
         )
         return 0
-    coverage = parse_coverage_dict(json.loads(coverage_path.read_text()), project_root)
     result = scan_files(
         files,
         project_root,
@@ -729,7 +1204,14 @@ def run(argv: list[str], project_root: Path) -> int:
         max_mutants=args.max_mutants,
         operators=args.operator or list(CATEGORIES),
         excludes=args.exclude,
+        use_cache=args.cache,
+        test_args=args.test_args,
     )
+    return _print_result(result)
+
+
+def _print_result(result: MutationResult) -> int:
+    """Violations first, then the one-line summary. Exit 2 iff violations."""
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(result.summary)
@@ -771,6 +1253,27 @@ def _build_parser() -> UsageErrorParser:
         type=int,
         default=MAX_MUTANTS,
         help=f"performance cap on executed covered sites (default: {MAX_MUTANTS})",
+    )
+    parser.add_argument(
+        "--cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "replay killed mutants of unchanged methods from "
+            f"{MUTATION_CACHE_FILE} instead of re-executing them; a config or "
+            "operator change wipes it (default: on)"
+        ),
+    )
+    parser.add_argument(
+        "--test-args",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help=(
+            "extra per-mutant test command argument, repeatable, e.g. "
+            "--test-args tests/test_analyzer.py to scope the suite "
+            "(default: the whole suite)"
+        ),
     )
     parser.add_argument(
         "--operator",
