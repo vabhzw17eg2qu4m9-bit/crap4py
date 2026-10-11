@@ -154,7 +154,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization (below). |
-| `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
+| `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -218,6 +218,20 @@ file is disposable build output (gitignored). `--no-cache` opts out.
 (e.g. `--test-args tests/test_analyzer.py`) to scope the suite on big repos —
 scoping is your responsibility: a mutant is killed only if the scoped suite
 would kill it.
+
+Diff-scoped execution + per-mutant test scoping (port of crap4dart 8228585):
+`--diff-base REF` intersects candidate sites with the changed lines BEFORE
+executing — a site runs only when its containing method intersects the diff
+(its own line when it sits outside every method), so a per-PR run pays only
+for the mutants of the changed methods (`git diff --unified=0 REF -- '*.py'`
+parsed into new-path → added-line numbers; a git failure is a usage error,
+exit 1). `--scope-tests` narrows each mutant's run to the derived test file
+of the mutated file (`tests/test_<module>.py`), falling back to the full
+invocation when no candidate exists — a scoped kill is monotone and cached
+as a regular kill, while a scoped survivor (timeouts included) is
+re-confirmed once against the full suite and only the confirmed outcome is
+reported and cached (`; test-scoped N (M re-confirmed killed)` in the
+summary). `--scope-tests` is deliberately not part of the cache meta guard.
 
 End-of-run tree integrity check (port of crap4dart 8b2e8e8): the engine
 snapshots every file it will mutate before the loop and re-verifies the whole

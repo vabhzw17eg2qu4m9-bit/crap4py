@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from crap4py.coverage import parse_coverage_dict
 from crap4py.mutation import (
@@ -92,7 +93,7 @@ class CacheRunTest(unittest.TestCase):
     def test_second_run_replays_kills_without_executing(self):
         calls = []
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             calls.append(root)
             return Killed
 
@@ -111,14 +112,16 @@ class CacheRunTest(unittest.TestCase):
 
     def test_survivors_are_always_reexecuted(self):
         seq = [Killed, Survived]
-        first = self._scan(_cov(self.root, write=False), runner=lambda root, timeout: seq.pop(0))
+        first = self._scan(
+            _cov(self.root, write=False), runner=lambda root, timeout, test_args: seq.pop(0)
+        )
         self.assertIn("1 killed", first.summary)
         self.assertIn("1 survived", first.summary)
 
         calls = []
         second = self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 1, "only the survivor re-executes")
         self.assertIn("1 cached", second.summary)
@@ -126,7 +129,7 @@ class CacheRunTest(unittest.TestCase):
         self.assertIn("0 survived", second.summary)
 
     def test_edit_inside_one_method_reexecutes_only_its_mutants(self):
-        self._scan(_cov(self.root, write=False), runner=lambda root, timeout: Killed)
+        self._scan(_cov(self.root, write=False), runner=lambda root, timeout, test_args: Killed)
 
         # A comment inside `add` only: its digest changes, `zero` stays identical.
         edited = FIXTURE.replace("def add(a, b):\n", "def add(a, b):\n    # note\n")
@@ -134,29 +137,29 @@ class CacheRunTest(unittest.TestCase):
         calls = []
         second = self._scan(
             _cov(self.root, executed=(3, 7), write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 1, "only add changed; zero replays from cache")
         self.assertIn("1 cached", second.summary)
         self.assertIn("2 killed", second.summary)
 
     def test_operator_meta_change_wipes_cache(self):
-        self._scan(_cov(self.root, write=False), runner=lambda root, timeout: Killed)
+        self._scan(_cov(self.root, write=False), runner=lambda root, timeout, test_args: Killed)
         calls = []
         second = self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
             operators=("arithmetic",),
         )
         self.assertEqual(len(calls), 1, "operator change must wipe the cache")
         self.assertIn("0 cached", second.summary)
 
     def test_test_args_meta_change_wipes_cache(self):
-        self._scan(_cov(self.root, write=False), runner=lambda root, timeout: Killed)
+        self._scan(_cov(self.root, write=False), runner=lambda root, timeout, test_args: Killed)
         calls = []
         second = self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
             test_args=("tests/test_a.py",),
         )
         self.assertEqual(len(calls), 2, "test_args change must wipe the cache")
@@ -171,7 +174,7 @@ class CacheRunTest(unittest.TestCase):
             [self.root / "a.py", self.root / "b.py"],
             self.root,
             coverage,
-            runner=lambda root, timeout: Killed,
+            runner=lambda root, timeout, test_args: Killed,
         )
         cache = MutationCache.load(self.root / MUTATION_CACHE_FILE, _written_meta())
         self.assertEqual(len(cache.methods), 3)
@@ -180,7 +183,7 @@ class CacheRunTest(unittest.TestCase):
         calls = []
         self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(calls, [], "a.py kills still replay")
         cache = MutationCache.load(self.root / MUTATION_CACHE_FILE, _written_meta())
@@ -197,7 +200,7 @@ class CacheRunTest(unittest.TestCase):
             [self.root / "a.py", self.root / "b.py"],
             self.root,
             coverage,
-            runner=lambda root, timeout: seq.pop(0),
+            runner=lambda root, timeout, test_args: seq.pop(0),
         )
         self.assertIn("1 survived", first.summary)
 
@@ -206,7 +209,7 @@ class CacheRunTest(unittest.TestCase):
             [self.root / "a.py", self.root / "b.py"],
             self.root,
             coverage,
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 1, "only b.py's survivor re-executes")
         self.assertIn("3 killed", second.summary)
@@ -215,7 +218,7 @@ class CacheRunTest(unittest.TestCase):
     def test_no_cache_skips_replay_and_writes_no_file(self):
         cache_path = self.root / MUTATION_CACHE_FILE
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             return Killed
 
         first = self._scan(_cov(self.root, write=False), runner=runner, use_cache=False)
@@ -229,7 +232,7 @@ class CacheRunTest(unittest.TestCase):
         calls = []
         second = self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 2)
         self.assertIn("0 cached", second.summary)
@@ -244,10 +247,76 @@ class CacheRunTest(unittest.TestCase):
         calls = []
         second = self._scan(
             _cov(self.root, write=False),
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 2)
         self.assertIn("0 cached", second.summary)
+
+
+class ScopeCacheTest(unittest.TestCase):
+    """scope_tests interplay: a scoped kill is monotone and cached as a regular kill."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "a.py").write_text(FIXTURE)
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "test_a.py").write_text(TEST_BODY)
+        _cov(self.root)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _scan(self, coverage, **kwargs):
+        return scan_files([self.root / "a.py"], self.root, coverage, **kwargs)
+
+    def test_scoped_kill_is_cached_as_a_regular_kill(self):
+        calls = []
+
+        def runner(root, timeout, test_args):
+            calls.append(test_args)
+            return Killed
+
+        first = self._scan(_cov(self.root, write=False), runner=runner, scope_tests=True)
+        self.assertEqual(calls, [["tests/test_a.py"], ["tests/test_a.py"]])
+        self.assertIn("2 killed", first.summary)
+
+        calls.clear()
+        # scope_tests is deliberately NOT part of the meta guard: the scoped
+        # kills replay on a plain full-suite run.
+        second = self._scan(_cov(self.root, write=False), runner=runner)
+        self.assertEqual(calls, [], "scoped kills must replay without executing")
+        self.assertIn("2 cached", second.summary)
+        self.assertIn("2 killed", second.summary)
+
+    def test_confirmed_scoped_kill_is_cached_as_a_kill(self):
+        seq = [Survived, Killed, Killed]
+
+        def runner(root, timeout, test_args):
+            return seq.pop(0)
+
+        first = self._scan(_cov(self.root, write=False), runner=runner, scope_tests=True)
+        self.assertIn("test-scoped 1 (1 re-confirmed killed)", first.summary)
+
+        calls = []
+        second = self._scan(
+            _cov(self.root, write=False),
+            runner=lambda root, timeout, test_args: calls.append(test_args) or Killed,
+        )
+        self.assertEqual(calls, [], "the confirmed kill must replay from the cache")
+        self.assertIn("2 cached", second.summary)
+
+    def test_cache_meta_is_identical_with_and_without_scope_tests(self):
+        self._scan(_cov(self.root, write=False), runner=lambda root, timeout, test_args: Killed)
+        meta = json.loads((self.root / MUTATION_CACHE_FILE).read_text())["meta"]
+        (self.root / MUTATION_CACHE_FILE).unlink()
+        self._scan(
+            _cov(self.root, write=False),
+            runner=lambda root, timeout, test_args: Killed,
+            scope_tests=True,
+        )
+        scoped_meta = json.loads((self.root / MUTATION_CACHE_FILE).read_text())["meta"]
+        self.assertEqual(meta, scoped_meta, "scope_tests must not enter the cache meta guard")
 
 
 class IntegrityTest(unittest.TestCase):
@@ -267,13 +336,13 @@ class IntegrityTest(unittest.TestCase):
 
     def test_multi_site_run_leaves_files_byte_identical(self):
         result = scan_files(
-            [self.path], self.root, self.coverage, runner=lambda root, timeout: Killed
+            [self.path], self.root, self.coverage, runner=lambda root, timeout, test_args: Killed
         )
         self.assertEqual(self.path.read_text(), FIXTURE)
         self.assertNotIn("INTEGRITY", result.summary)
 
     def test_runner_tampering_cannot_leave_a_mutant_behind(self):
-        def sabotage_then_kill(root, timeout):
+        def sabotage_then_kill(root, timeout, test_args):
             self.path.write_text(FIXTURE.replace("a + b", "a != b"))
             return Killed
 
@@ -284,7 +353,7 @@ class IntegrityTest(unittest.TestCase):
     def test_exception_mid_loop_still_leaves_files_byte_identical(self):
         seq = [Killed, MutationUnavailable("python not found on PATH")]
 
-        def runner(root, timeout):
+        def runner(root, timeout, test_args):
             outcome = seq.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -353,7 +422,7 @@ class CacheUnitTest(unittest.TestCase):
             [self.root / "a.py"],
             self.root,
             coverage,
-            runner=lambda root, timeout: calls.append(root) or Killed,
+            runner=lambda root, timeout, test_args: calls.append(root) or Killed,
         )
         self.assertEqual(len(calls), 3, "module-level mutants still execute (1 +, two 1s)")
         cache = MutationCache.load(self.root / MUTATION_CACHE_FILE, _written_meta())
@@ -373,10 +442,23 @@ class TestArgsTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_test_args_scope_the_test_command(self):
-        baseline = default_test_command(str(self.root))
-        scoped = default_test_command(str(self.root), ("tests/test_a.py", "-x"))
-        self.assertEqual(scoped[-2:], ["tests/test_a.py", "-x"])
-        self.assertEqual(scoped[: len(baseline)], baseline)
+        with mock.patch("importlib.util.find_spec", return_value=object()):
+            self.assertEqual(
+                default_test_command(str(self.root), ("tests/test_a.py",)),
+                [sys.executable, "-m", "pytest", "tests/test_a.py"],
+            )
+        with mock.patch("importlib.util.find_spec", return_value=None):
+            # unittest discovery cannot take file paths: scoped file args
+            # run as dotted modules (the repo's `python -m unittest` convention).
+            self.assertEqual(
+                default_test_command(str(self.root), ("tests/test_a.py",)),
+                [sys.executable, "-m", "unittest", "tests.test_a"],
+            )
+            # Non-file args keep appending to discovery (e.g. flags).
+            self.assertEqual(
+                default_test_command(str(self.root), ("-v",)),
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+            )
 
     def test_cli_rejects_empty_test_args(self):
         proc = subprocess.run(
