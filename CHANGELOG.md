@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.8.0...v0.9.0) (2026-10-11)
+
+
+### Features
+
+* **gates:** mutation gate — port of upstream crap4dart c865ec3 ([#29](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/29)) ([76e08f3](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/76e08f3c4747673a8601be8bee81066f18f19fff))
+
 ## [0.8.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.7.1...v0.8.0) (2026-09-30)
 
 
