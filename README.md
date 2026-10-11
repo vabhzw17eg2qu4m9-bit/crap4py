@@ -68,6 +68,7 @@ crap4py banned-imports       # enforce --from/--forbid import boundaries
 crap4py magic-constants      # flag hex colors outside constants and repeated literals
 crap4py test-assertions      # flag test bodies without assertion calls
 crap4py duplicates           # flag files over the duplicated-lines threshold
+crap4py mutation             # mutation testing: re-run tests per mutated operator
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -153,6 +154,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization (below). |
+| `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -184,6 +186,24 @@ keep their lexemes, and f-strings go opaque). `--ignore-literals` masks
 string/numeric literals as `$STR`/`$NUM`. Detection unions the raw pass
 with the masked one, so exact copies survive shifted placeholder
 numbering.
+
+`mutation` is mutation testing adapted from the unclebob/mutator research
+conclusions (port of crap4dart's 22nd gate): a declarative, category-tagged
+operator table (`arithmetic` `+`↔`-`, `*`↔`/`, `/`→`//`; `boundary`
+`>`↔`>=`, `<`↔`<=`, `>`↔`<`, `>=`↔`<=`; `equality` `==`↔`!=`; `logical`
+`and`↔`or`; `boolean` `True`↔`False`; `constant` `0`↔`1`, `-1`→`0`;
+`unary` delete `not`) is matched on the parsed AST — the Python AST gives
+operator nodes no positions, so the exact operator token is located as the
+single code token between the operand spans (stdlib `tokenize`, never
+regex). Covered sites (per the coverage.py report) mutate one at a time and
+the project's test suite re-runs per mutant: non-zero exit kills (import
+errors included), a clean pass survives, a timeout survives. Uncovered
+sites are excluded from the score. The engine clears `__pycache__` and runs
+the suite with `PYTHONDONTWRITEBYTECODE=1` — a stale bytecode cache would
+shadow mutants (pyc validation is mtime+size, and same-sized mutants land
+in the same second). Expensive, and therefore never part of plain analysis:
+`mutation` runs only when invoked. Requires `coverage.json` and a `tests/`
+(or `test/`) directory; otherwise it skips with a reason (exit 0).
 
 crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
 per-path threshold entries, yaml config, baselines) are not ported — ports
@@ -247,7 +267,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -293,6 +313,7 @@ crap4py/
     magic_constants.py    `magic-constants` gate subcommand (magic literals)
     test_assertions.py    `test-assertions` gate subcommand (assertion-free tests)
     folder_structure.py   `folder-structure` gate subcommand (loose-file sprawl)
+    mutation.py           `mutation` gate subcommand (per-mutant test re-runs)
     imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand
   tests/                  stdlib unittest; fixtures/sample.py + coverage.json

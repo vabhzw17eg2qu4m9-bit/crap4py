@@ -31,6 +31,7 @@ _SUBCOMMANDS = (
     "test-assertions",
     "folder-structure",
     "duplicates",
+    "mutation",
 )
 
 _USAGE = """\
@@ -49,6 +50,7 @@ Usage:
   crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
   crap4py test-assertions [..] Flag test bodies without assertion calls.
   crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
+  crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -155,6 +157,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         file_naming,
         folder_structure,
         magic_constants,
+        mutation,
         nesting,
         profile,
         skill,
@@ -178,5 +181,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "test-assertions": test_assertions.run,
         "folder-structure": folder_structure.run,
         "duplicates": duplicates.run,
+        "mutation": mutation.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
