@@ -728,7 +728,7 @@ def _build_result(
     checked_lines = 0
     duplicated_lines = 0
     for file_tokens in files:
-        dup_lines = {t.line for t in file_tokens.tokens if t.duplicated}
+        dup_lines = _duplicated_lines(file_tokens)
         checked_lines += file_tokens.total_lines
         duplicated_lines += len(dup_lines)
         violation = _violation(file_tokens, dup_lines, threshold)
@@ -755,11 +755,33 @@ def _clones_result(
         )
         for group in groups
     ]
+    percent = _total_percent(files)
     if violations:
-        summary = f"{len(violations)} clone groups (>= {min_tokens} tokens, >= {min_lines} lines)"
+        summary = (
+            f"{len(violations)} clone groups "
+            f"(>= {min_tokens} tokens, >= {min_lines} lines), "
+            f"{percent}% duplicated lines"
+        )
     else:
-        summary = f"no clones >= {min_lines} lines across {len(files)} files"
+        summary = (
+            f"no clones >= {min_lines} lines across {len(files)} files, {percent}% duplicated lines"
+        )
     return DuplicationResult(tuple(violations), summary)
+
+
+def _total_percent(files: list[_FileTokens]) -> str:
+    """Project-wide duplicated-line percentage (marked tokens vs total
+    lines), so a clones-mode summary always carries a number too."""
+    checked_lines = sum(f.total_lines for f in files)
+    duplicated_lines = sum(len(_duplicated_lines(f)) for f in files)
+    if checked_lines == 0:
+        return "0.00"
+    return f"{duplicated_lines / checked_lines * 100.0:.2f}"
+
+
+def _duplicated_lines(file_tokens: _FileTokens) -> set[int]:
+    """The file's lines carrying at least one marked token."""
+    return {t.line for t in file_tokens.tokens if t.duplicated}
 
 
 def _clone_message(files: list[_FileTokens], group: _CloneGroup) -> str:

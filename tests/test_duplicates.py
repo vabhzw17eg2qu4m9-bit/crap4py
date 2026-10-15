@@ -622,6 +622,25 @@ class ClonesModeTest(unittest.TestCase):
         self.assertEqual(result.violations, ())
         self.assertIn("no clones", result.summary)
 
+    def test_clones_summary_carries_project_wide_percentage(self):
+        # Upstream 0f54f0d: both clones-mode summaries end with the
+        # project-wide duplicated-line percentage (marked lines / total
+        # lines), the number percentage mode already computes.
+        self._write("alpha.py", CLONE_FN.format(name="process_a"))
+        self._write("beta.py", CLONE_FN.format(name="process_b"))
+        result = _result(self.root, min_tokens=20, report="clones")
+        # The clone marks lines 1-5 of both 8-line files: 10 / 16 lines.
+        self.assertEqual(
+            result.summary,
+            "1 clone groups (>= 20 tokens, >= 5 lines), 62.50% duplicated lines",
+        )
+        (self.root / "beta.py").unlink()
+        clean = _result(self.root, min_tokens=20, report="clones")
+        self.assertEqual(
+            clean.summary,
+            "no clones >= 5 lines across 1 files, 0.00% duplicated lines",
+        )
+
     def test_percentage_mode_stays_the_default(self):
         self._write("alpha.py", CLONE_FN.format(name="process_a"))
         self._write("beta.py", CLONE_FN.format(name="process_b"))
@@ -688,7 +707,9 @@ class CpdKnobsTest(unittest.TestCase):
         result = _result(self.root, report="clones", skip_duplicate_files=True)
         self.assertEqual(result.violations, ())
         # The copy never enters the scan: only one file is analyzed.
-        self.assertEqual(result.summary, "no clones >= 5 lines across 1 files")
+        self.assertEqual(
+            result.summary, "no clones >= 5 lines across 1 files, 0.00% duplicated lines"
+        )
 
     def test_without_skip_duplicate_files_a_copied_file_is_a_clone(self):
         self._write("alpha.py", TWO_FN_FILE)
