@@ -626,7 +626,10 @@ reports one violation per accepted clone group instead (PMD CPD style):
 `<first file>:<first line>: clone: T tokens / L lines, K occurrences:
 `f1:l1-l2; f2:l1-l2; f3:l1-l2 (+N more)` — groups sorted longest first,
 up to three locations shown. Pass summary: `no clones >= M lines across
-N files`; fail summary: `K clone groups (>= T tokens, >= M lines)`. Files
+N files, X.XX% duplicated lines`; fail summary: `K clone groups (>= T
+tokens, >= M lines), X.XX% duplicated lines` — the project-wide
+duplicated-line percentage (marked lines over the scanned set's total
+lines), the number percentage mode already computes. Files
 with fewer than `--min-tokens` tokens never enter the scan (the summary
 counts tokenized files only, and with `--skip-duplicate-files` the copy
 is skipped the same way). With nothing tokenizable the gate passes with
