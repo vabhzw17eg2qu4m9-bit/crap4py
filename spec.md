@@ -35,7 +35,7 @@ crap4py unused-files [path]  Check for source files never imported.
 crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
 crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
 crap4py test-assertions [..] Flag test bodies without assertion calls.
-crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
+crap4py duplicates [opts] [p..] Flag duplicated lines (percentage) or clone groups (clones).
 crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
@@ -551,12 +551,19 @@ report) plus one line on installing it as an agent skill
 
 crap4py duplicates [--threshold N] [--min-tokens N] [--min-lines N]
                    [--ignore-locals] [--ignore-literals]
+                   [--ignore-identifiers] [--ignore-imports]
+                   [--skip-duplicate-files]
+                   [--report percentage|clones]
                    [--exclude GLOB]... [--source PATH]... [paths...]
 ```
 
 Flags files whose share of duplicated lines exceeds `--threshold` percent
-(default 1.0). Port of the crap4dart `duplication` gate (upstream §11.11)
-including the dc64e9c per-gate `sources` union.
+(default 1.0), or — with `--report clones` — reports one violation per
+clone group. Port of the crap4dart `duplication` gate (upstream §11.11)
+including the dc64e9c per-gate `sources` union and the d6c3ab6 CPD-parity
+work (clones mode, `ignore_identifiers`/`ignore_imports`/
+`skip_duplicate_files`, token-equality verification, shared-extent
+anchoring).
 
 Detection tokenizes every scanned file with the stdlib `tokenize` module,
 keeping token lexemes with their source line. Dropped token types — the
@@ -567,8 +574,27 @@ and `ERRORTOKEN`. A duplicated block is a window of at least
 `--min-lines` (default 5) source lines whose token sequence appears at
 least twice — within or across files, since every file is indexed
 together. Windows are indexed by a Rabin-Karp rolling hash over the
-lexeme hashes, mod 2**64 (upstream's jscpd-style scheme; a 64-bit hash
-collision reports a false duplicate, exactly as upstream accepts).
+lexeme hashes, mod 2**64 (upstream's jscpd-style scheme). Hash buckets
+are only candidates: each bucket of at least two window positions is
+verified by actual token equality against the bucket reference (a
+Rabin-Karp fingerprint collision no longer reports a false duplicate),
+extended to the maximal extent the occurrences share, and clipped to the
+common token count; the resulting groups compete in one greedy
+longest-first selection that accepts non-overlapping occurrences only
+(PMD CPD Match semantics) and marks their tokens.
+
+Three opt-in CPD-parity knobs, all default off. `--ignore-identifiers`
+masks every identifier-shaped token to `$ID` before hashing —
+structure-only matching that detects clones renamed anywhere; hard
+keywords (`if`, `for`, `return`, `and`, `in`, ...) keep their lexeme,
+while soft keywords (`match`, `case`, `type`, `_`) and builtins (`len`,
+`range`, `print`, ...) occupy identifier slots and mask too. With it on,
+per-scope local renaming is redundant. `--ignore-imports` excludes
+`import` and from-import statements from tokenization (their AST
+line/col ranges are skipped, multi-line parenthesized imports included).
+`--skip-duplicate-files` analyzes a file whose masked token stream
+equals an earlier file's only once, so a copied file yields one clone
+group instead of N×N pairs.
 
 Two opt-in normalizations extend detection to renamed (Type-2) clones,
 both default off — with both off, behavior is identical to plain
@@ -589,16 +615,23 @@ with `$STR`/`$NUM` placeholders. Detection is a union of two passes: the
 raw-lexeme pass always runs alongside the masked one, so exact copies
 are never lost when enclosing scopes shift placeholder numbering.
 
-A file's duplicated-line share is its distinct duplicated-token lines
+Report modes. `percentage` (the default) keeps per-file semantics: a
+file's duplicated-line share is its distinct duplicated-token lines
 divided by its total line count; the file violates when the share is
 strictly greater than `--threshold`, reported at the first duplicated
-line: `<file>:<line>: X.XX% duplicated lines > T%`. Files with fewer
-than `--min-tokens` tokens never enter the scan (the summary counts
-tokenized files only). Pass summary: `N files, X.XX% duplicated lines`
-(aggregate share over the scanned set); fail summary:
-`M/N files over T% duplication`. With nothing tokenizable the gate
-passes with `no files with enough tokens`. Exit `2` iff violations,
-`1` on usage errors.
+line: `<file>:<line>: X.XX% duplicated lines > T%`. Pass summary:
+`N files, X.XX% duplicated lines` (aggregate share over the scanned
+set); fail summary: `M/N files over T% duplication`. `--report clones`
+reports one violation per accepted clone group instead (PMD CPD style):
+`<first file>:<first line>: clone: T tokens / L lines, K occurrences:
+`f1:l1-l2; f2:l1-l2; f3:l1-l2 (+N more)` — groups sorted longest first,
+up to three locations shown. Pass summary: `no clones >= M lines across
+N files`; fail summary: `K clone groups (>= T tokens, >= M lines)`. Files
+with fewer than `--min-tokens` tokens never enter the scan (the summary
+counts tokenized files only, and with `--skip-duplicate-files` the copy
+is skipped the same way). With nothing tokenizable the gate passes with
+`no files with enough tokens`. Exit `2` iff violations, `1` on usage
+errors.
 
 File selection: like every gate, explicit `paths` (files/dirs, expanded
 to `.py`) replace the default scan set — the §4 selection (`src/` else
@@ -618,8 +651,15 @@ selection. Exit `2` iff violations, `1` on usage errors.
 Regression-pinned by `tests/test_duplicates.py`: within-file and
 cross-file detection, the `--min-tokens`/`--min-lines` boundaries,
 threshold exclusivity (`>` not `>=`), flag round-trips through `run()`
-(`--min-tokens`, `--threshold`), positional paths selecting the scan
-set, `--source` union with missing paths skipped, and `--exclude` globs.
+(`--min-tokens`, `--threshold`, `--report`, the CPD-parity booleans),
+positional paths selecting the scan set, `--source` union with missing
+paths skipped, `--exclude` globs, clones mode (one violation per group,
+all locations, three-location truncation, `percentage` as default),
+`--ignore-identifiers` structure-only matching, `--ignore-imports`
+boilerplate exclusion, and `--skip-duplicate-files` single analysis.
+The anchored-group share semantics (token-equality verification,
+shared-extent anchoring, non-overlapping acceptance) kill the old
+raw-window engine: that test fails against the pre-d6c3ab6 marking.
 
 ## 25. `mutation`
 

@@ -164,7 +164,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
-| `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization (below). |
+| `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files] [--report percentage\|clones] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--report clones` switches to one violation per non-overlapping clone group (PMD CPD style). `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization, `--ignore-identifiers`/`--ignore-imports`/`--skip-duplicate-files` are the CPD-parity knobs (below). |
 | `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
@@ -182,10 +182,20 @@ definition): explicit paths (like every gate) or the default §4-style
 selection, plus any `--source` file/dir
 (dirs expand recursively to `.py`, missing paths skipped) — the hook for
 cross-module duplicate checks. `--exclude` globs (fnmatch on
-project-relative paths) drop files from the scan. A file fails when its
-distinct duplicated-token lines exceed `--threshold`% of its lines; the
-summary reports the aggregate share, e.g. `12 files, 0.42% duplicated
-lines` / `1/12 files over 1.0% duplication`.
+project-relative paths) drop files from the scan. In the default
+`percentage` mode a file fails when its distinct duplicated-token lines
+exceed `--threshold`% of its lines; the summary reports the aggregate
+share, e.g. `12 files, 0.42% duplicated lines` / `1/12 files over 1.0%
+duplication`. `--report clones` reports one violation per
+non-overlapping clone group instead — longest first, every occurrence
+location in the message: `clone: 52 tokens / 12 lines, 2 occurrences:
+alpha.py:3-14; beta.py:3-14` (up to three locations, then `(+N more)`).
+
+Windows are hash-bucket candidates only: each bucket is verified by
+token equality (a Rabin-Karp collision no longer reports a false
+duplicate), extended to the shared extent, and the groups compete in
+one greedy longest-first non-overlapping selection (PMD CPD Match
+semantics).
 
 Two opt-in normalizations extend the gate to renamed (Type-2) clones,
 both off by default. `--ignore-locals` renames function-local
@@ -196,7 +206,13 @@ assigned/unpacking/walrus targets, loop and comprehension variables,
 keep their lexemes, and f-strings go opaque). `--ignore-literals` masks
 string/numeric literals as `$STR`/`$NUM`. Detection unions the raw pass
 with the masked one, so exact copies survive shifted placeholder
-numbering.
+numbering. The CPD-parity knobs (upstream d6c3ab6), all off by default:
+`--ignore-identifiers` masks every identifier to one `$ID` placeholder
+before hashing — structure-only matching that finds clones renamed
+anywhere (hard keywords keep their lexemes; soft keywords and builtins
+mask too); `--ignore-imports` drops `import`/from-import statements
+from tokenization; `--skip-duplicate-files` analyzes a token-identical
+file only once, so a copied file is one clone group, not N×N pairs.
 
 `mutation` is mutation testing adapted from the unclebob/mutator research
 conclusions (port of crap4dart's 22nd gate): a declarative, category-tagged

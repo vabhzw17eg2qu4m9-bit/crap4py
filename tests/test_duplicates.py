@@ -15,6 +15,53 @@ from crap4py.duplicates import _line_count, _load, scan_files
 # entirely inside one copy (144 tokens over 12 distinct lines).
 BLOCK = "".join(f"    value_{i} = compute_item(item, {i}, offset={i * 3})\n" for i in range(12))
 
+# Shared function body for clones-mode fixtures (~33 tokens over 9 lines —
+# above the --min-tokens 20 these tests pass explicitly, below the 50
+# default, so every test shows which window size it relies on).
+CLONE_FN = (
+    "def {name}(items):\n"
+    "    total = 0\n"
+    "    for item in items:\n"
+    "        if item > 0:\n"
+    "            total += item * 2\n"
+    "        else:\n"
+    "            total -= item\n"
+    "    return total + 42\n"
+)
+
+# Import boilerplate (22 tokens over 8 lines) plus a tiny function (8
+# tokens): together they clear --min-tokens 15 only while imports count.
+IMPORT_BOILERPLATE = (
+    "import os\n"
+    "import sys\n"
+    "from pathlib import Path\n"
+    "from collections import deque\n"
+    "from typing import (\n"
+    "    Any,\n"
+    "    Callable,\n"
+    ")\n"
+)
+TINY_FN = "def tiny(x):\n    return x\n"
+
+# Whole-file fixture with no internal duplication (~65 tokens over 13
+# lines — above the 50-token default).
+TWO_FN_FILE = (
+    "def alpha(xs):\n"
+    "    total = 0\n"
+    "    for x in xs:\n"
+    "        if x > 0:\n"
+    "            total += x * 2\n"
+    "        else:\n"
+    "            total -= x\n"
+    "    return total + 42\n"
+    "\n"
+    "def bravo(s):\n"
+    "    parts = s.split(':')\n"
+    "    if not parts:\n"
+    "        return 'none'\n"
+    "    return '-'.join(reversed(parts))\n"
+)
+
 
 def _unique_stem(name: str, salt: int) -> str:
     """Function body with no repeated token windows, even across files:
@@ -350,6 +397,18 @@ class DuplicateDetectionTest(unittest.TestCase):
         self.assertEqual([v.line for v in over.violations], [1])
         self.assertIn("100.00% duplicated lines > 99.99%", over.violations[0].message)
 
+    def test_accepted_group_anchors_shape_the_marked_share(self):
+        # One accepted clone group per duplicated region: its anchored
+        # occurrences — verified by token equality, not raw window hashes
+        # — mark the lines that count toward the share. Raw window
+        # matching (the pre-d6c3ab6 engine) marks nearly the whole file
+        # and crosses the 70% threshold.
+        copy = "def dup_{tag}(items):\n    total = 0\n" + BLOCK + "    return total\n"
+        body = copy.format(tag="a") + "leftover = splice(items, marker)\n" + copy.format(tag="b")
+        self._write("solo.py", body)
+        result = _result(self.root, threshold=70.0)
+        self.assertEqual(result.violations, ())
+
     def test_no_tokenizable_files_passes_with_note(self):
         self._write("tiny.py", "x = 1\n")
         result = _result(self.root)
@@ -532,6 +591,112 @@ class TokenizeHelpersTest(unittest.TestCase):
         self.assertIsNone(_load(path))
 
 
+class ClonesModeTest(unittest.TestCase):
+    """``--report clones`` (upstream d6c3ab6): one violation per
+    non-overlapping clone group, longest first, every occurrence location
+    in the message. ``percentage`` stays the default."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, name: str, content: str) -> None:
+        (self.root / name).write_text(content, encoding="utf-8")
+
+    def test_clones_mode_fails_per_group_with_all_locations(self):
+        self._write("alpha.py", CLONE_FN.format(name="process_a"))
+        self._write("beta.py", CLONE_FN.format(name="process_b"))
+        result = _result(self.root, min_tokens=20, report="clones")
+        self.assertEqual(len(result.violations), 1)
+        violation = result.violations[0]
+        self.assertTrue(violation.message.startswith("clone: "), violation.message)
+        self.assertIn("2 occurrences: ", violation.message)
+        self.assertIn("alpha.py:", violation.message)
+        self.assertIn("beta.py:", violation.message)
+        self.assertIn("clone groups (>= 20 tokens, >= 5 lines)", result.summary)
+
+    def test_clones_mode_passes_a_project_without_duplicates(self):
+        self._write("alpha.py", CLONE_FN.format(name="process_a"))
+        result = _result(self.root, min_tokens=20, report="clones")
+        self.assertEqual(result.violations, ())
+        self.assertIn("no clones", result.summary)
+
+    def test_percentage_mode_stays_the_default(self):
+        self._write("alpha.py", CLONE_FN.format(name="process_a"))
+        self._write("beta.py", CLONE_FN.format(name="process_b"))
+        result = _result(self.root, min_tokens=20)
+        self.assertEqual(len(result.violations), 2)
+        for violation in result.violations:
+            self.assertIn("duplicated lines >", violation.message)
+        self.assertIn("2/2 files over 1.0% duplication", result.summary)
+
+    def test_clones_message_truncates_after_three_locations(self):
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            self._write(name, CLONE_FN.format(name=f"process_{name[0]}"))
+        result = _result(self.root, min_tokens=20, report="clones")
+        self.assertEqual(len(result.violations), 1)
+        message = result.violations[0].message
+        self.assertIn("a.py:1-5; b.py:1-5; c.py:1-5 (+1 more)", message)
+        self.assertNotIn("d.py:", message)
+
+
+class CpdKnobsTest(unittest.TestCase):
+    """``--ignore-identifiers`` / ``--ignore-imports`` /
+    ``--skip-duplicate-files`` (upstream d6c3ab6): every knob is opt-in
+    and its default preserves the pre-knob behavior."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, name: str, content: str) -> None:
+        (self.root / name).write_text(content, encoding="utf-8")
+
+    def test_ignore_identifiers_matches_clones_renamed_anywhere(self):
+        template = (
+            "def {name}(items, sep):\n"
+            "    {buf} = ''\n"
+            "    for element in items:\n"
+            "        {buf} += element.upper() + sep\n"
+            "    print(len({buf}), {buf}.strip())\n"
+            "    return {buf}\n"
+        )
+        self._write("alpha.py", template.format(name="first", buf="buffer"))
+        self._write("beta.py", template.format(name="second", buf="out"))
+        self.assertEqual(_result(self.root, min_tokens=20, report="clones").violations, ())
+        result = _result(self.root, min_tokens=20, report="clones", ignore_identifiers=True)
+        self.assertEqual(len(result.violations), 1)
+
+    def test_ignore_imports_keeps_import_boilerplate_out_of_clones(self):
+        body = IMPORT_BOILERPLATE + TINY_FN
+        self._write("alpha.py", body)
+        self._write("beta.py", body)
+        # Without the flag the import block alone clears --min-tokens 15.
+        raw = _result(self.root, min_tokens=15, report="clones")
+        self.assertEqual(len(raw.violations), 1, raw.summary)
+        self.assertIn("alpha.py:1-", raw.violations[0].message)
+        # With the flag only the sub-min-tokens function remains.
+        result = _result(self.root, min_tokens=15, report="clones", ignore_imports=True)
+        self.assertEqual(result.violations, ())
+        self.assertEqual(result.summary, "no files with enough tokens")
+
+    def test_skip_duplicate_files_reports_a_copied_file_once(self):
+        self._write("alpha.py", TWO_FN_FILE)
+        self._write("beta.py", TWO_FN_FILE)
+        result = _result(self.root, report="clones", skip_duplicate_files=True)
+        self.assertEqual(result.violations, ())
+        # The copy never enters the scan: only one file is analyzed.
+        self.assertEqual(result.summary, "no clones >= 5 lines across 1 files")
+
+    def test_without_skip_duplicate_files_a_copied_file_is_a_clone(self):
+        self._write("alpha.py", TWO_FN_FILE)
+        self._write("beta.py", TWO_FN_FILE)
+        result = _result(self.root, report="clones")
+        self.assertEqual(len(result.violations), 1)
+
+
 class RunTest(unittest.TestCase):
     """In-process ``run()`` coverage (subprocess runs don't count here)."""
 
@@ -635,6 +800,51 @@ class RunTest(unittest.TestCase):
                 self.assertEqual(duplicates.run([*extra, "--min-lines", "2"], self.root), 2)
             self.assertIn("2/2 files over 1.0% duplication", out.getvalue())
 
+    def test_report_flag_round_trips(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = duplicates.run(
+                ["--min-tokens", "20", "--min-lines", "2", "--report", "clones"], self.root
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("clone: ", out.getvalue())
+        self.assertIn("clone groups (>= 20 tokens, >= 2 lines)", out.getvalue())
+
+    def test_report_rejects_unknown_modes(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            duplicates.run(["--report", "pmd"], self.root)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("invalid choice", err.getvalue())
+
+    def test_cpd_boolean_flags_round_trip(self):
+        # --ignore-identifiers flags the renamed pair the raw engine misses.
+        for name, body in zip(("alpha.py", "beta.py"), _renamed_pair(), strict=True):
+            (self.root / name).write_text(body, encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = duplicates.run(
+                ["--min-tokens", "20", "--report", "clones", "--ignore-identifiers"], self.root
+            )
+        self.assertEqual(code, 2, out.getvalue())
+        # --ignore-imports keeps the import boilerplate out of the scan.
+        body = IMPORT_BOILERPLATE + TINY_FN
+        (self.root / "alpha.py").write_text(body, encoding="utf-8")
+        (self.root / "beta.py").write_text(body, encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = duplicates.run(
+                ["--min-tokens", "15", "--report", "clones", "--ignore-imports"], self.root
+            )
+        self.assertEqual(code, 0, out.getvalue())
+        # and --skip-duplicate-files analyzes a copied file only once.
+        (self.root / "alpha.py").write_text(TWO_FN_FILE, encoding="utf-8")
+        (self.root / "beta.py").write_text(TWO_FN_FILE, encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = duplicates.run(["--report", "clones", "--skip-duplicate-files"], self.root)
+        self.assertEqual(code, 0, out.getvalue())
+
 
 class DuplicatesCliTest(unittest.TestCase):
     def setUp(self):
@@ -703,6 +913,12 @@ class DuplicatesCliTest(unittest.TestCase):
         flagged = self._run("--ignore-locals")
         self.assertEqual(flagged.returncode, 2, flagged.stderr)
         self.assertIn("alpha.py:", flagged.stdout)
+
+    def test_duplicates_report_clones_flag(self):
+        flagged = self._run("--min-tokens", "20", "--min-lines", "2", "--report", "clones")
+        self.assertEqual(flagged.returncode, 2, flagged.stderr)
+        self.assertIn("clone: ", flagged.stdout)
+        self.assertIn("clone groups (>= 20 tokens, >= 2 lines)", flagged.stdout)
 
 
 if __name__ == "__main__":
