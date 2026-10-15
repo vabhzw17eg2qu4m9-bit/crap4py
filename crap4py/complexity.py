@@ -2,8 +2,10 @@
 
 Counting rules (base value 1, +1 per decision point):
   ``ast.If``, ``ast.For``, ``ast.AsyncFor``, ``ast.While``, ``ast.ExceptHandler``,
-  ``ast.IfExp`` (ternary), ``ast.match_case`` (3.10+).
-  ``ast.BoolOp`` contributes ``len(values) - 1``.
+  ``ast.IfExp`` (ternary), ``ast.match_case`` (3.10+; a ``case ... if guard:``
+  adds one more for the guard).
+  ``ast.BoolOp`` contributes ``len(values) - 1``; ``ast.MatchOr``
+  (``case a | b`` or-patterns) contributes ``len(patterns) - 1``.
   ``ast.ListComp``/``SetComp``/``DictComp``/``GeneratorExp`` contribute
   ``len(generators)`` (one per ``for`` clause).
 
@@ -51,7 +53,7 @@ def _collect(node: ast.AST, prefix: str | None, methods: list[MethodDescriptor])
                     name=qual,
                     start_line=child.lineno,
                     end_line=child.end_lineno or child.lineno,
-                    complexity=_complexity_of_function(child),
+                    complexity=cyclomatic_complexity(child),
                 )
             )
             # Nested defs use the immediate function's bare name as prefix,
@@ -59,7 +61,7 @@ def _collect(node: ast.AST, prefix: str | None, methods: list[MethodDescriptor])
             _collect(child, prefix=child.name, methods=methods)
 
 
-def _complexity_of_function(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+def cyclomatic_complexity(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
     """Count decision points in the function body, skipping nested named defs."""
     complexity = 1
     for stmt in func.body:
@@ -81,11 +83,12 @@ def _walk_skipping_functions(node: ast.AST) -> Iterator[ast.AST]:
 
 def _node_complexity(node: ast.AST) -> int:
     """Complexity contribution of a single AST node (0 for non-decision nodes)."""
-    if isinstance(
-        node,
-        (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp, ast.match_case),
-    ):
+    if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp)):
         return 1
+    if isinstance(node, ast.match_case):
+        return 2 if node.guard is not None else 1
+    if isinstance(node, ast.MatchOr):
+        return max(len(node.patterns) - 1, 0)
     if isinstance(node, ast.BoolOp):
         return max(len(node.values) - 1, 0)
     if isinstance(node, _COMPREHENSION_TYPES):

@@ -2,6 +2,8 @@
 
 Deep nesting is the classic artifact of dodging the complexity gate with
 layered conditionals — port of the crap4dart ``nesting`` gate (limit 5).
+``elif`` chains are flat (each chained ``if`` keeps its originating if's
+level); an ``if`` after other ``else`` statements still adds a level.
 """
 
 from __future__ import annotations
@@ -140,9 +142,24 @@ def _statement_depth(stmt: ast.stmt, level: int) -> int:
 def _control_blocks(stmt: ast.stmt) -> list[tuple[list[ast.stmt], int]]:
     """Child statement blocks of a control statement with their level offsets."""
     blocks = [(stmt.body, 1)]
-    blocks += [(block, 1) for name in ("orelse", "finalbody") if (block := getattr(stmt, name, []))]
+    for name in ("orelse", "finalbody"):
+        block = getattr(stmt, name, [])
+        if block:
+            blocks.append((block, _orelse_offset(name, block)))
     blocks += [(handler.body, 2) for handler in getattr(stmt, "handlers", [])]
     return blocks
+
+
+def _orelse_offset(name: str, block: list[ast.stmt]) -> int:
+    """Level offset of an ``orelse``/``finalbody`` block.
+
+    ``elif`` chains are flat: Python parses ``elif`` as a single ``ast.If``
+    in ``orelse``, which stays at the originating if's level — while an
+    ``if`` after other ``else`` statements still adds a level.
+    """
+    if name == "orelse" and len(block) == 1 and isinstance(block[0], ast.If):
+        return 0
+    return 1
 
 
 def _build_parser() -> UsageErrorParser:

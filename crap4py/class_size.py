@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
-from .complexity import _complexity_of_function
+from .complexity import cyclomatic_complexity
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
 
 MAX_METHODS = 25
@@ -91,7 +91,7 @@ def class_totals(tree: ast.Module) -> Iterator[ClassTotals]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             methods = [stmt for stmt in node.body if isinstance(stmt, _FUNCTION_TYPES)]
-            wmc = sum(_complexity_of_function(method) for method in methods)
+            wmc = sum(cyclomatic_complexity(method) for method in methods)
             yield ClassTotals(node.name, node.lineno, len(methods), wmc)
 
 

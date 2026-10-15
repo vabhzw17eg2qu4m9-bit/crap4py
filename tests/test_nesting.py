@@ -55,7 +55,9 @@ class MaxNestingTest(unittest.TestCase):
             6,
         )
 
-    def test_elif_chain_each_adds_a_level(self):
+    def test_elif_chain_is_flat(self):
+        # ``elif`` chains stay at the originating if's level (upstream 7bf7a15:
+        # else-if chains are flat, an if inside an else block still nests).
         self.assertEqual(
             _depths(
                 """
@@ -68,7 +70,25 @@ class MaxNestingTest(unittest.TestCase):
                         return 3
                 """
             )["f"],
-            4,
+            2,
+        )
+
+    def test_if_after_other_statements_in_else_still_nests(self):
+        # Python parses ``elif`` and ``else`` + ``if`` identically, so only an
+        # ``if`` preceded by other statements in the ``else`` suite nests.
+        self.assertEqual(
+            _depths(
+                """
+                def f(a):
+                    if a == 1:
+                        return 1
+                    else:
+                        tag = 2
+                        if a == 2:
+                            return tag
+                """
+            )["f"],
+            3,
         )
 
     def test_try_and_each_except_add_a_level(self):
@@ -204,6 +224,13 @@ class RunTest(unittest.TestCase):
         (self.root / "sub").mkdir()
         (self.root / "sub" / "deep.py").write_text(_DEEP, encoding="utf-8")
         self.assertEqual(run(["sub"], self.root), 2)
+
+    def test_long_elif_chain_does_not_trip_the_gate(self):
+        chain = "def f(x):\n" + "".join(
+            f"    {'elif' if i else 'if'} x == {i}:\n        return {i}\n" for i in range(7)
+        )
+        (self.root / "chain.py").write_text(chain, encoding="utf-8")
+        self.assertEqual(run([], self.root), 0)
 
 
 class CliSubprocessTest(unittest.TestCase):

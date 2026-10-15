@@ -59,6 +59,7 @@ crap4py --coverage cov.json  # override the coverage file path
 crap4py --run-tests          # run tests under coverage, then analyze
 crap4py profile              # run tests against instrumented source; report timings
 crap4py file-naming          # check source file names for mechanical names
+crap4py complexity           # flag methods over the complexity limit (--metric cyclomatic|cognitive)
 crap4py nesting              # check functions for nesting deeper than 5 levels
 crap4py class-size           # check classes for >25 methods or WMC >80
 crap4py weight-of-class      # check classes for public data weight >0.33
@@ -135,16 +136,26 @@ where digits carry meaning (`base64.py`, `sha256.py`, `utf8.py`, ...) are
 allowed. Prints one line per violation plus a summary; exits `2` iff any
 violations.
 
+## `crap4py complexity`
+
+Fails methods whose complexity exceeds the limit (`--max`, default 10).
+`--metric` selects the metric: `cyclomatic` (default, path count — the value
+CRAP uses) or `cognitive` (SonarSource-style, nesting-weighted — flat `elif`
+chains stay cheap, nested ones pay extra; `and`/`or` sequences count once per
+run). Prints one line per violation plus a summary; exits `2` iff any
+violations.
+
 ## Gate subcommands (ported from crap4dart 0.5.x–0.9.x)
 
-Ten quality-gate checks, each a standalone subcommand taking optional
+Eleven quality-gate checks, each a standalone subcommand taking optional
 explicit paths (default: the normal §4-style selection — `src/` else `.`,
 test files skipped; `test-assertions` inverts this and scans test files).
 All exit `2` iff violations, `1` on usage errors.
 
 | Subcommand                | Fails when …                                                        |
 |---------------------------|---------------------------------------------------------------------|
-| `nesting [paths...]`      | a function's control-flow nesting exceeds 5 levels (body = 1).      |
+| `complexity [--metric M] [--max N] [paths...]` | a method's complexity exceeds N (default 10) — `M` is `cyclomatic` (default) or `cognitive`. |
+| `nesting [paths...]`      | a function's control-flow nesting exceeds 5 levels (body = 1; `elif` chains stay flat). |
 | `class-size [paths...]`   | a class has >25 concrete methods or a complexity sum (WMC) >80.     |
 | `weight-of-class [paths…]`| a class's public data share (`self.<attr>` fields ÷ public members) >0.33. |
 | `unused-code [paths...]`  | a module-level private name (`_func`, `_x = …`) is never referenced in its module. |
@@ -302,20 +313,35 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`) violations. |
 
 ## Cyclomatic complexity rules
 
 Base `1`, then `+1` for each:
 
 - `if`, `for`, `async for`, `while`, `except` handler, ternary (`x if c else y`)
-- `match`/`case` clause (Python 3.10+)
+- `match`/`case` clause (Python 3.10+); a `case ... if guard:` adds one more
+- `|` or-patterns in a `case`: `len(patterns) − 1`
 - Each `for` clause in a comprehension (`ListComp`/`SetComp`/`DictComp`/`GeneratorExp`)
 - `and`/`or` short-circuits: `len(values) − 1` per `BoolOp`
 
 Lambda bodies count toward the enclosing method. Nested named function defs
 are reported as their own methods and do **not** inflate the parent's
 complexity. `__init__` is treated as a normal method (Python convention).
+
+## Cognitive complexity rules
+
+The `complexity --metric cognitive` option scores methods with SonarSource-
+style cognitive complexity instead (port of crap4dart's `CognitiveCalculator`;
+CRAP always uses cyclomatic). The score starts at `0`, then:
+
+- `+1` per flow break: `if`/`elif`/`else`, `for`/`async for`, `while`,
+  `except` handler, every `match` case, ternary, and each *sequence* of
+  identical `and`/`or` operators (`a and b and c` = +1, `a and b or c` = +2).
+- Structural constructs (everything above except `and`/`or`) pay `1 + depth`
+  when nested; logical sequences stay flat.
+- `elif` chains are flat: each chained `if` increments once at the depth of
+  its originating `if`.
 
 ## Project layout
 
@@ -331,6 +357,8 @@ crap4py/
     cli.py                subcommand dispatch + argparse + exit codes
     crap.py               formula + dataclasses
     complexity.py         ast-based cyclomatic complexity
+    cognitive.py          SonarSource-style cognitive complexity
+    complexity_gate.py    `complexity` subcommand: per-method metric gate
     coverage.py           coverage.py JSON parser + attribution
     analyzer.py           orchestration
     report.py             tabular formatter

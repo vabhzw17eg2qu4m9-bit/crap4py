@@ -21,6 +21,7 @@ _SUBCOMMANDS = (
     "profile",
     "skill",
     "file-naming",
+    "complexity",
     "nesting",
     "class-size",
     "weight-of-class",
@@ -41,6 +42,7 @@ Usage:
   crap4py <path>...            Analyze explicit files; directories expand to .py files.
   crap4py profile [opts] [p..] Run tests against instrumented source; report timings.
   crap4py file-naming [path]   Check source file names for mechanical names.
+  crap4py complexity [opts] [p..] Flag methods over the complexity limit.
   crap4py nesting [path]       Check functions for nesting deeper than 5 levels.
   crap4py class-size [path]    Check classes for >25 methods or WMC >80.
   crap4py weight-of-class [p.] Check classes for public data weight >0.33.
@@ -153,6 +155,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
     from . import (
         banned_imports,
         class_size,
+        complexity_gate,
         duplicates,
         file_naming,
         folder_structure,
@@ -171,6 +174,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "profile": profile.run,
         "skill": skill.run,
         "file-naming": file_naming.run,
+        "complexity": complexity_gate.run,
         "nesting": nesting.run,
         "class-size": class_size.run,
         "weight-of-class": weight_of_class.run,
