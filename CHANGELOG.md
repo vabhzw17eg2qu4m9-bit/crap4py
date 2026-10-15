@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.12.0...v0.13.0) (2026-10-15)
+
+
+### Features
+
+* duplication CPD-parity clones mode, ignore-identifiers/imports, skip-duplicate-files ([#38](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/38)) ([ba568a0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/ba568a07dc39af62e9b0d990425fb36edb64256f))
+
 ## [0.12.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.11.0...v0.12.0) (2026-10-15)
 
 
