@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.11.0...v0.12.0) (2026-10-15)
+
+
+### Features
+
+* cognitive complexity metric option (SonarSource), match-guard/or-pattern CC fix, flat elif nesting ([#36](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/36)) ([fd970d3](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/fd970d321b28bc5140f99ca06a1c9bd27e9e3e6f))
+
 ## [0.11.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.10.0...v0.11.0) (2026-10-11)
 
 
