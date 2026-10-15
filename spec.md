@@ -26,6 +26,7 @@ crap4py --changed            Analyze git-changed .py files only.
 crap4py <path>...            Analyze explicit files/dirs (dirs expand to .py).
 crap4py profile [opts] [p..] Run tests against instrumented source; report timings.
 crap4py file-naming [path]   Check source file names for mechanical names.
+crap4py complexity [opts] [p..] Flag methods over the complexity limit.
 crap4py nesting [path]       Check functions for nesting deeper than 5 levels.
 crap4py class-size [path]    Check classes for >25 methods or WMC >80.
 crap4py weight-of-class [p.] Check classes for public data weight >0.33.
@@ -46,10 +47,10 @@ crap4py --run-tests          Run tests under coverage, then analyze.
 `--changed` is mutually exclusive with explicit paths (usage error → exit 1).
 Unknown flags → usage error (exit 1).
 
-Subcommands (`profile`, `skill`, `file-naming`, `nesting`, `class-size`,
-`weight-of-class`, `unused-code`, `unused-files`, `banned-imports`,
-`magic-constants`, `test-assertions`, `folder-structure`, `duplicates`,
-`mutation`) are
+Subcommands (`profile`, `skill`, `file-naming`, `complexity`, `nesting`,
+`class-size`, `weight-of-class`, `unused-code`, `unused-files`,
+`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
+`duplicates`, `mutation`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -115,6 +116,8 @@ Base `1`, then `+1` per decision point:
 | `except`                               | `ast.ExceptHandler`                       |
 | ternary `x if c else y`                | `ast.IfExp`                               |
 | `match`/`case`                         | `ast.match_case` (3.10+)                  |
+| `case ... if guard:`                   | +1 more when `match_case.guard` is set    |
+| `case a \| b` or-patterns              | `ast.MatchOr` → `len(patterns) − 1`       |
 | `and` / `or`                           | `ast.BoolOp` → `len(values) − 1`          |
 | comprehension `for` clauses            | `len(generators)` on `ListComp`/`SetComp`/`DictComp`/`GeneratorExp` |
 
@@ -175,7 +178,7 @@ Exit `2` when `max(numeric CRAP) > threshold`, with
 |------|------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or empty selection).             |
 | `1`  | Usage error: bad flags, `--changed` + paths, unreadable source. |
-| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19). |
+| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §26). |
 
 ## 11. `--run-tests`
 
@@ -221,7 +224,10 @@ Fails functions whose deepest control-flow nesting exceeds 5 levels —
 port of the crap4dart `nesting` gate. The function body block is level 1;
 `if`/`elif`, `for`, `while`, `with`, `match`/`case` blocks and `try`
 bodies (with `else`/`finally`) add one level, and each `except` handler
-adds one more (its block sits inside the `try`). Nested named function
+adds one more (its block sits inside the `try`). `elif` chains shall stay
+flat: Python parses `elif` as a single `ast.If` in `orelse`, which keeps
+the originating `if`'s level, while an `if` after other statements in an
+`else` suite keeps adding a level. Nested named function
 defs are their own methods and do not add to the parent. Test files are
 skipped (§4 rules).
 
@@ -779,7 +785,45 @@ scope_tests cache interplay: scoped kills cached as regular kills and
 replayed with `--scope-tests` off, confirmed scoped kills cached, and a
 meta guard identical with and without scoping.
 
-## 26. Non-goals
+## 26. `complexity`
+
+```
+crap4py complexity [--metric M] [--max N] [paths...]
+```
+
+Fails methods whose complexity exceeds `--max` (default 10) — port of the
+crap4dart `complexity` gate. `--metric` selects the metric: `cyclomatic`
+(default; counted per §7) or `cognitive` (SonarSource-style, counted per
+§26.1; nesting-weighted — flat `elif` chains stay cheap, nested ones pay
+extra). Output: `<file>:<line>: <method> CC=<n> > max <n>` (cognitive
+violations read `cognitive=<n>`), then a summary line
+(`<m>/<n> methods over their <metric> limit` /
+`<n> methods within their <metric> limit`). Exit `2` iff violations.
+The CRAP score of the `analyze` command always uses cyclomatic complexity
+regardless of this setting.
+
+### 26.1 Cognitive complexity
+
+The score starts at `0` (not a path count), then:
+
+- `+1` per flow break: `if`/`elif`/`else`, `for`/`async for`, `while`,
+  `except` handler, every `match` case, ternary `x if c else y`, and each
+  *sequence* of identical `and`/`or` operators (`a and b and c` = +1,
+  `a and b or c` = +2).
+- Structural constructs (everything above except `and`/`or`) pay `1 + depth`
+  when they appear inside another structural construct at depth `depth`;
+  logical sequences stay flat.
+- `elif` chains are flat: each chained `if` increments once at the depth of
+  its originating `if`, so `if/elif/elif` scores 3 regardless of chain
+  length. Python parses `elif` and `else` + `if` into the same AST, so both
+  stay flat; an `if` after other statements in an `else` suite keeps paying.
+  Loop `else` suites (no upstream analog) nest like the loop body without an
+  extra increment.
+- Lambda bodies and comprehension bodies increase nesting depth but do not
+  increment themselves. Nested named function defs are skipped entirely,
+  mirroring cyclomatic complexity.
+
+## 27. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).

@@ -53,6 +53,28 @@ class ComplexityTest(unittest.TestCase):
         )
         self.assertEqual(_cc(src, "f"), 3)  # base 1 + 2 cases
 
+    def test_match_case_guard_counts(self):
+        src = (
+            "def f(x):\n"
+            "    match x:\n"
+            "        case int() if x > 0:\n"
+            "            return 'pos'\n"
+            "        case _:\n"
+            "            return 'other'\n"
+        )
+        self.assertEqual(_cc(src, "f"), 4)  # base 1 + 2 cases + guard
+
+    def test_or_pattern_counts_like_boolop(self):
+        src = (
+            "def f(x):\n"
+            "    match x:\n"
+            "        case 1 | 2 | 3:\n"
+            "            return 'low'\n"
+            "        case _:\n"
+            "            return 'other'\n"
+        )
+        self.assertEqual(_cc(src, "f"), 5)  # base 1 + 2 cases + (3 or-values - 1)
+
     def test_async_for(self):
         src = "async def f(xs):\n    async for x in xs:\n        pass\n"
         self.assertEqual(_cc(src, "f"), 2)
