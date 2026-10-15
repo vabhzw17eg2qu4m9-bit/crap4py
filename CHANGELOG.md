@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.13.0...v0.14.0) (2026-10-15)
+
+
+### Features
+
+* clones-mode summary carries project-wide duplicated-line percentage ([#40](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/40)) ([3ed5f2f](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/3ed5f2fb804be990b735862887037f7cb400cf68))
+
 ## [0.13.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.12.0...v0.13.0) (2026-10-15)
 
 
