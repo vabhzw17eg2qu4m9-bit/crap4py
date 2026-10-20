@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.14.0...v0.15.0) (2026-10-20)
+
+
+### Features
+
+* **similarity:** file-level near-duplicate gate + command ([#42](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/42)) ([27bf149](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/27bf149bbe9ed6d4b59ac922718c41bfb9f98871))
+
 ## [0.14.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.13.0...v0.14.0) (2026-10-15)
 
 
