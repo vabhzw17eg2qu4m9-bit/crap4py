@@ -271,6 +271,39 @@ crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
 per-path threshold entries, yaml config, baselines) are not ported — ports
 are flag-based with upstream default thresholds.
 
+## `crap4py similarity`
+
+Scans any text corpus (markdown docs, source files) for file-level
+near-duplicates — port of the crap4dart `similarity` gate + command
+(upstream 2b21966) and the exploration tool for tuning the thresholds
+before relying on them. Two files are *similar* when their 8-token shingle
+sets overlap enough: Jaccard (overall overlap, `--jaccard`, default 0.8)
+or containment (the smaller file largely inside the bigger one,
+`--containment`, default 0.95). Comments, imports, code fences and literal
+values are normalized away, so only real content counts. Informational:
+always exits 0.
+
+```bash
+crap4py similarity                          # project's markdown, console report
+crap4py similarity docs/                    # scan one directory
+crap4py similarity --jaccard 0.5            # threshold overrides
+crap4py similarity --min-shingles 30        # smaller files are skipped
+crap4py similarity --include '**/*.md' --include '**/*.py'
+crap4py similarity --format json            # machine-readable clusters
+```
+
+Profiles by extension: `.md`/`.markdown`/`.mdx` drop fenced code blocks;
+source files (a 25-extension family) strip comments and import-family
+lines and map literals to `S`/`N` placeholders — `.py` via the stdlib
+`tokenize`/`ast` path, the rest language-agnostic; anything else compares
+as-is. Similar pairs merge transitively into clusters. Files below
+`--min-shingles` (default 50) are skipped. `--include`/`--exclude` are
+fnmatch globs on project-relative paths (default exclusions: `.git/`,
+`.venv/`, `build/`, `coverage/`, `node_modules/`). There is no config file
+— the kebab-case flags are the whole config surface, strictly validated.
+Dogfood: measured clean on this repo's own md corpus at jaccard 0.6 /
+containment 0.9.
+
 ## `crap4py skill`
 
 Prints the profiling skill instructions (when to profile, how the
@@ -327,7 +360,7 @@ Sorted by CRAP descending; `N/A` entries last.
 
 | Code | Meaning                                                                |
 |------|------------------------------------------------------------------------|
-| `0`  | Success (max CRAP ≤ threshold, or no files to analyze).                |
+| `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
 | `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`) violations. |
 
