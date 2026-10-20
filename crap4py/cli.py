@@ -33,6 +33,7 @@ _SUBCOMMANDS = (
     "folder-structure",
     "duplicates",
     "mutation",
+    "similarity",
 )
 
 _USAGE = """\
@@ -53,6 +54,7 @@ Usage:
   crap4py test-assertions [..] Flag test bodies without assertion calls.
   crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
   crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
+  crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -163,6 +165,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         mutation,
         nesting,
         profile,
+        similarity,
         skill,
         test_assertions,
         unused_code,
@@ -186,5 +189,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "folder-structure": folder_structure.run,
         "duplicates": duplicates.run,
         "mutation": mutation.run,
+        "similarity": similarity.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)

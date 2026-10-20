@@ -37,6 +37,7 @@ crap4py magic-constants [..] Flag hex colors outside constants and repeated lite
 crap4py test-assertions [..] Flag test bodies without assertion calls.
 crap4py duplicates [opts] [p..] Flag duplicated lines (percentage) or clone groups (clones).
 crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
+crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -50,7 +51,7 @@ Unknown flags → usage error (exit 1).
 Subcommands (`profile`, `skill`, `file-naming`, `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `mutation`) are
+`duplicates`, `mutation`, `similarity`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -866,12 +867,89 @@ The score starts at `0` (not a path count), then:
   increment themselves. Nested named function defs are skipped entirely,
   mirroring cyclomatic complexity.
 
-## 27. Non-goals
+## 27. `similarity`
+
+```
+crap4py similarity [--format console|json] [--jaccard N] [--containment N]
+                   [--min-shingles N] [--include GLOB]... [--exclude GLOB]...
+                   [dirs...]
+```
+
+File-level near-duplicate detection over any text corpus (markdown, source
+code of any language, raw text) — port of the crap4dart `similarity` gate +
+command (upstream 2b21966, §11.23). Each scanned file is normalized per its
+profile — markdown (`.md`/`.markdown`/`.mdx`) drops fenced code blocks,
+code (a 25-extension family) drops comments and import-family lines and
+maps literals to placeholders, raw is compared as-is — tokenized
+(markdown/raw: 2+ letter words lowercased; code: identifiers lowercased
+and literal placeholders), and represented as the set of its 8-token
+shingles.
+
+Two files are *similar* when Jaccard(A,B) >= `--jaccard` (default 0.8) OR
+containment(A,B) >= `--containment` (default 0.95; intersection over the
+smaller set — catches a small file largely copied into a big one). Similar
+pairs merge transitively into clusters (union-find with path compression),
+and each cluster reports the pairs that built it. Files with fewer than
+`--min-shingles` shingles (default 50) are skipped — tiny files carry no
+reliable signal and never enter comparison.
+
+Profiles are extension-mapped. The code profile is language-agnostic: the
+generic engine strips block/line comments (`//`, `#`, `--`, `;`) and
+import-family lines (`import`/`export`/`part`/`part of`/`library`,
+`from`/`require`/`require_once`/`using`/`package`/`include`, shebangs),
+then tokenizes identifiers (lowercased), quoted strings (`S`) and numbers
+(`N`). `.py` files instead go through the stdlib `tokenize`/`ast` path
+with the same token alphabet: comments dropped natively,
+`import`/from-import statements dropped (multi-line parenthesized
+included), strings/numbers → `S`/`N`, names lowercased, f-strings opaque;
+a file the tokenizer cannot read falls back to the generic engine.
+
+Selection: positional `dirs` (default `.`) scanned recursively; reported
+paths stay project-relative (unlike upstream there is no scan-root switch)
+and missing directories are skipped silently. `--include` globs (default
+`**/*.md`; a leading `**/` also matches at the root, fnmatch semantics
+otherwise) and `--exclude` globs (fnmatch on project-relative paths,
+defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
+`node_modules/**` — upstream's list with `.dart_tool/**` traded for
+`.venv/**`) drop files.
+
+The command is informational and ALWAYS exits 0 — the exploration tool for
+tuning thresholds; usage/flag errors exit 1. There is no config file and
+no `check` pipeline (§28), so upstream's gate config maps to the
+strictly validated kebab-case flags: `--jaccard`/`--containment` outside
+0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
+are usage errors. Opt-in by nature: nothing in the default analyze path
+reads this module, so defaults cannot change existing behavior.
+
+Output. Console: a summary line `similarity: N files scanned (M skipped
+below K shingles), thresholds jaccard >= X / containment >= Y`, then
+`no similar files`, or one block per cluster (largest first) listing each
+member with its strongest pair metrics (`jaccard 0.87, containment
+0.92`), then `P files in C clusters`. `--format json` prints `scanned`,
+`skipped`, `thresholds` (`jaccard`/`containment`/`min_shingles`), `pairs`
+(`a`, `b`, `jaccard`, `containment` rounded to 4 decimals, strongest
+Jaccard first) and `clusters` (sorted files) — stdout stays JSON-only.
+
+Dogfood: measured clean on this repo's own md corpus (README/spec/
+CHANGELOG — 3 files scanned, 1 below the 50-shingle floor) at upstream's
+thresholds jaccard 0.6 / containment 0.9, and still clean at jaccard 0.5.
+
+Regression-pinned by `tests/test_similarity.py` (fixture shingle counts
+are asserted before every cross-file expectation, so a below-floor
+fixture can never pass vacuously). Killing fixtures: breaking union-find
+transitivity fails `test_pairs_merge_transitively`; swapping the
+jaccard/containment metrics or dropping the containment criterion fails
+`test_containment_only_pair_crosses`; dropping markdown fence
+normalization fails `test_fence_only_differences_still_cluster`; dropping
+literal placeholders fails the `.py` and generic literal fixtures.
+
+## 28. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
 - No badges, no IDE plugins.
-- No support for non-`.py` files or non-coverage.py formats.
+- No support for non-`.py` files in CRAP analysis (the `similarity` scan
+  reads any text per §27) or non-coverage.py formats.
 - No config file and no gate framework (crap4py is a flag-based single
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
   are not ported. Gate severity/ignorable/entries/baseline features of
