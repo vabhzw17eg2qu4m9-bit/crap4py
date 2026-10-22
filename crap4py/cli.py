@@ -34,6 +34,7 @@ _SUBCOMMANDS = (
     "duplicates",
     "mutation",
     "similarity",
+    "memory",
 )
 
 _USAGE = """\
@@ -55,6 +56,7 @@ Usage:
   crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
   crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
   crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
+  crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -162,6 +164,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         file_naming,
         folder_structure,
         magic_constants,
+        memory,
         mutation,
         nesting,
         profile,
@@ -190,5 +193,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "duplicates": duplicates.run,
         "mutation": mutation.run,
         "similarity": similarity.run,
+        "memory": memory.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)

@@ -38,6 +38,7 @@ crap4py test-assertions [..] Flag test bodies without assertion calls.
 crap4py duplicates [opts] [p..] Flag duplicated lines (percentage) or clone groups (clones).
 crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
 crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
+crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -51,7 +52,7 @@ Unknown flags → usage error (exit 1).
 Subcommands (`profile`, `skill`, `file-naming`, `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `mutation`, `similarity`) are
+`duplicates`, `mutation`, `similarity`, `memory`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -915,7 +916,7 @@ defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
 
 The command is informational and ALWAYS exits 0 — the exploration tool for
 tuning thresholds; usage/flag errors exit 1. There is no config file and
-no `check` pipeline (§28), so upstream's gate config maps to the
+no `check` pipeline (§29), so upstream's gate config maps to the
 strictly validated kebab-case flags: `--jaccard`/`--containment` outside
 0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
 are usage errors. Opt-in by nature: nothing in the default analyze path
@@ -943,7 +944,73 @@ jaccard/containment metrics or dropping the containment criterion fails
 normalization fails `test_fence_only_differences_still_cluster`; dropping
 literal placeholders fails the `.py` and generic literal fixtures.
 
-## 28. Non-goals
+## 28. `memory`
+
+```
+crap4py memory [--top N] [--format console|json] [pytest args...]
+```
+
+Per-test allocation churn / GC attribution — port of the crap4dart
+`memory` command (upstream 3bae178bc0, phase 1). The command runs
+`python -m pytest -p crap4py.memory_plugin` (the tap plugin is
+`PYTHONPATH`-injected; `PYTHONHASHSEED=0` is pinned for churn
+reproducibility) and parses the plugin's JSONL log:
+
+- churn is PRIMARY via tracemalloc windows: peak live traced memory above
+  the window-start baseline (`tracemalloc.reset_peak`), deterministic per
+  code path; `gc.callbacks` counting (the `--verbose_gc` analog) is
+  diagnostics only — Python's GC tap exposes no byte sizes and never fires
+  for raw-block allocations, so GC-event-driven bytes would be blind;
+- semantics vs upstream, honest: upstream churn = reclaimed new-gen MB
+  (GROSS volume); Python has no cheap gross-allocation counter, so churn
+  here is the peak live footprint of the window (alloc-and-free cycles
+  net out) and `retained` = signed net traced-memory delta — the
+  old-gen-growth / leak-suspect analog. GC counts are machine-dependent
+  and never a metric (upstream's conclusion, ported);
+- each test window covers pytest's `runtest_protocol` — setup + call +
+  teardown, the analog of upstream's `testStart`..`testDone` — so fixture
+  allocations are attributed to the test; collection/import allocations
+  fall between windows and count towards run totals only (the loading-GC
+  rule);
+- attribution is EXACT where upstream inferred: nodeids carry the file,
+  and window taps share one clock, so there is no dill-index suite
+  mapping, no global clock-offset voting and no straggler reattribution —
+  those solve two-stream problems a same-process tap cannot have.
+
+Options:
+
+- `[pytest args...]`
+  Unknown flags and paths are forwarded to pytest verbatim
+  (`parse_known_args`), e.g. `--ignore=crap4py/test_assertions.py`.
+- `--top <n>` (default 20)
+  How many entries each leaderboard prints; `< 1` is a usage error.
+- `--format console|json` (default console)
+  Output format; `json` keeps stdout JSON-only (pytest progress goes to
+  stderr).
+
+Console: a summary line `memory: N tests, M GCs, churn X MB peak live,
+retained ±Y MB`, then leaderboards — files by churn, tests by churn, tests
+by retained growth (leak suspects first). JSON: `test_count`, `gc_count`,
+`total_churn_mb`, `total_retained_mb`, `files` (`file`, `tests`,
+`churn_mb`, `retained_mb`, `gcs`) and `tests` (`nodeid`, `file`,
+`churn_mb`, `retained_mb`, `gcs`), MB rounded to 1 decimal; `files` and
+`tests` are untruncated, the console leaderboards are `--top`-limited.
+
+The command is informational: it exits 0 after a run — even with failing
+or erroring tests (they still get records) — and 1 on usage errors (no
+Python test suite found: manifest `pyproject.toml`/`setup.py`/`setup.cfg`
+plus a `tests/`/`test/` directory required; no tests executed). The
+current interpreter must have pytest installed; unittest-style suites run
+through it unchanged.
+
+Dogfood (this repo, `--ignore=crap4py/test_assertions.py` — that source
+module's `test_candidates(tree)` helper is miscollected by pytest, a
+pre-existing main quirk): 525 tests, 97 GCs, 27.1 MB churn over 29 test
+files, top file `tests/test_duplicates.py` 4.2 MB. Determinism: file-level
+churn identical across runs (0/29 differ); 2/525 tests jitter at the
+0.1 MB rounding boundary; GC counts moved 97 → 98.
+
+## 29. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
