@@ -70,6 +70,8 @@ crap4py magic-constants      # flag hex colors outside constants and repeated li
 crap4py test-assertions      # flag test bodies without assertion calls
 crap4py duplicates           # flag files over the duplicated-lines threshold
 crap4py mutation             # mutation testing: re-run tests per mutated operator
+crap4py similarity           # scan for near-duplicate files (console/json)
+crap4py memory               # per-test alloc churn + GC attribution (informational)
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -303,6 +305,44 @@ fnmatch globs on project-relative paths (default exclusions: `.git/`,
 — the kebab-case flags are the whole config surface, strictly validated.
 Dogfood: measured clean on this repo's own md corpus at jaccard 0.6 /
 containment 0.9.
+
+## `crap4py memory`
+
+Runs the test suite under `python -m pytest` with a tracemalloc tap
+(injected as a pytest plugin, `-p crap4py.memory_plugin`) and attributes
+memory to tests: which tests allocate the most (churn — peak live traced
+MB during the test window, deterministic across runs) and which leave
+memory behind (retained MB — the leak-suspect leaderboard). GC events are
+counted via `gc.callbacks` for diagnostics only — counts are
+machine-dependent and never a metric (upstream's conclusion, ported).
+
+Semantics differ from the Dart VM's, stated honestly: upstream churn is
+reclaimed new-gen MB (gross volume that flowed through); Python has no
+cheap gross-allocation counter, so churn here is the peak live footprint
+of the test window (alloc-and-free cycles net out) and retained is the
+signed net delta — the old-gen-growth analog. Windows cover
+setup + call + teardown (the analog of `testStart`..`testDone`), so
+fixture allocations are attributed to the test; collection/import
+allocations count towards run totals only. Attribution is exact where
+upstream had to infer: pytest nodeids carry the file and the window taps
+share one clock, so there is no suite-index mapping, no clock-offset
+voting and no straggler reattribution.
+
+```bash
+crap4py memory                  # run the suite, print the leaderboards
+crap4py memory --top 5          # shorter leaderboards
+crap4py memory --format json    # machine-readable report (JSON-only stdout)
+crap4py memory tests/ --ignore=tests/test_x.py   # unknown args go to pytest
+```
+
+Informational only — always exits 0 after a run (failing tests included);
+usage errors (no Python test suite found, no tests executed) exit 1.
+`PYTHONHASHSEED=0` is pinned in the run for churn reproducibility. The
+current interpreter must have pytest installed; unittest-style suites run
+through it unchanged. Dogfood: 525 tests, 27.1 MB churn across 29 test
+files (top: `tests/test_duplicates.py` 4.2 MB); file-level churn identical
+across runs, 2/525 tests jitter at the 0.1 MB rounding boundary, GC counts
+moved 97 → 98 — never a metric.
 
 ## `crap4py skill`
 
