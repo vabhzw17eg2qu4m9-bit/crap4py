@@ -25,6 +25,7 @@ from unittest import mock
 
 from crap4py.memory import (
     DEFAULT_TOP,
+    _badge_color,
     _is_python_project,
     _load_log,
     _print_console,
@@ -75,6 +76,17 @@ def test_forces_gc():
     junk = [object() for _ in range(50000)]
     gc.collect()
     assert junk is not None
+"""
+
+# ~4 MB allocated at MODULE IMPORT — i.e. during pytest's collection
+# phase, before any test window opens. Phase-2 bucket rule: this must
+# land in the unattributed bucket, never in the first test's window.
+COLLECTION_ALLOC_TESTS = """\
+_HOLD = [bytes(1024) for _ in range(4000)]  # ~4 MB live from collection onward
+
+
+def test_first():
+    assert True
 """
 
 
@@ -133,6 +145,70 @@ class BuildReportTest(unittest.TestCase):
         report = build_report(records)
         self.assertEqual(report["gc_count"], 5)
         self.assertEqual(report["total_retained_bytes"], 900_000)
+
+
+class UnattributedBucketTest(unittest.TestCase):
+    """Phase-2 bucket (upstream 11551739c8): out-of-window activity
+    (collection/import, session start/finish) is reported separately and
+    never pollutes test/file totals."""
+
+    def _records(self) -> list[dict]:
+        return [
+            _test_record("tests/a_test.py::t1", 4_000_000, 300_000, gcs=2, collected=11),
+            {
+                "event": "totals",
+                "tests": 1,
+                "gcs": 5,
+                "gc_collected": 40,
+                "retained_bytes": 900_000,
+            },
+            {
+                "event": "unattributed",
+                "gcs": 3,
+                "gc_collected": 29,
+                "churn_bytes": 2_500_000,
+                "retained_bytes": 600_000,
+            },
+        ]
+
+    def test_bucket_is_reported_verbatim(self):
+        report = build_report(self._records())
+        self.assertEqual(
+            report["unattributed"],
+            {"churn_bytes": 2_500_000, "retained_bytes": 600_000, "gcs": 3, "gc_collected": 29},
+        )
+
+    def test_bucket_never_pollutes_file_or_test_totals(self):
+        report = build_report(self._records())
+        self.assertEqual(report["files"][0]["churn_bytes"], 4_000_000)
+        self.assertEqual(report["files"][0]["gcs"], 2)
+        self.assertEqual(len(report["tests"]), 1)
+        self.assertEqual(report["test_count"], 1)
+
+    def test_missing_bucket_record_defaults_to_zeros(self):
+        report = build_report([_test_record("tests/a_test.py::t1", 1, 1)])
+        self.assertEqual(
+            report["unattributed"],
+            {"churn_bytes": 0, "retained_bytes": 0, "gcs": 0, "gc_collected": 0},
+        )
+
+    def test_console_and_json_report_the_bucket(self):
+        report = build_report(self._records())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_console(report, DEFAULT_TOP)
+        self.assertIn(
+            "unattributed (collection/session, outside test windows): "
+            "2.5 MB peak, +0.6 MB retained, 3 GCs",
+            out.getvalue(),
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_json(report, DEFAULT_TOP)
+        self.assertEqual(
+            json.loads(out.getvalue())["unattributed"],
+            {"churn_mb": 2.5, "retained_mb": 0.6, "gcs": 3},
+        )
 
 
 class ConsoleJsonTest(unittest.TestCase):
@@ -203,6 +279,15 @@ class UsageErrorTest(unittest.TestCase):
                 run_memory(["--top", "0"], root)
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_negative_badge_threshold_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(PYPROJECT)
+            (root / "tests").mkdir()
+            with self.assertRaises(SystemExit) as ctx:
+                run_memory(["--badge-threshold", "-1"], root)
+        self.assertEqual(ctx.exception.code, 1)
+
 
 class LoadLogTest(unittest.TestCase):
     """Direct parser tests (CI installs no pytest, so _load_log has no
@@ -259,6 +344,19 @@ class IsPythonProjectTest(unittest.TestCase):
             self.assertTrue(_is_python_project(root))
 
 
+class BadgeColorTest(unittest.TestCase):
+    """Killing test for the threshold logic: green at or below the
+    threshold, yellow at most twice, red above — mutating a comparison
+    or the 2x factor fails here."""
+
+    def test_threshold_boundaries_pick_the_color(self):
+        self.assertEqual(_badge_color(0.0, 500.0), "#4c1")
+        self.assertEqual(_badge_color(500.0, 500.0), "#4c1")
+        self.assertEqual(_badge_color(500.1, 500.0), "#dfb317")
+        self.assertEqual(_badge_color(1000.0, 500.0), "#dfb317")
+        self.assertEqual(_badge_color(1000.1, 500.0), "#e05d44")
+
+
 class RunBranchTest(unittest.TestCase):
     """run()'s output branches without spawning pytest: _profile is mocked,
     so these cover the command logic in CI too (pytest absent there)."""
@@ -302,6 +400,24 @@ class RunBranchTest(unittest.TestCase):
         code, _, err, _ = self._run([], "pytest exploded")
         self.assertEqual(code, 1)
         self.assertIn("no tests executed (pytest exploded)", err)
+
+    def test_badge_is_written_with_threshold_color(self):
+        # 4_000_000 bytes of churn = "4 MB": green at threshold 4,
+        # yellow at 2.5 (4 <= 2*2.5), red at 1 (4 > 2).
+        records = [_test_record("tests/a_test.py::t1", 4_000_000, 100_000)]
+        for threshold, color in (("4", "#4c1"), ("2.5", "#dfb317"), ("1", "#e05d44")):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "badges" / "memory.svg"
+                with mock.patch("crap4py.memory._profile", return_value=(records, None)):
+                    code, _, err = run_memory(
+                        ["--badge", str(path), "--badge-threshold", threshold], self.root
+                    )
+                svg = path.read_text(encoding="utf-8")
+            self.assertEqual(code, 0)
+            self.assertIn(f"Badge written to {path}", err)
+            self.assertIn("memory churn", svg)
+            self.assertIn(">4 MB<", svg)
+            self.assertIn(f'fill="{color}"', svg)
 
 
 @unittest.skipUnless(_pytest_available(), "pytest not importable")
@@ -355,6 +471,31 @@ class MemoryRunIntegrationTest(unittest.TestCase):
     def test_gc_events_are_counted(self):
         _, report, _ = self.json_report()
         self.assertGreaterEqual(self.entry(report, "test_forces_gc")["gcs"], 1)
+
+    def test_collection_allocations_land_in_the_unattributed_bucket(self):
+        # Killing test for the window boundary (upstream 11551739c8): the
+        # ~4 MB allocated at module import — collection time, before any
+        # window opens — belongs to the bucket. A boundary leak would
+        # inflate the first test's window instead and empty the bucket.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(PYPROJECT)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_coll.py").write_text(COLLECTION_ALLOC_TESTS)
+            code, out, err = run_memory(["--format", "json"], root)
+            payload = json.loads(out)
+        self.assertEqual(code, 0, err)
+        bucket = payload["unattributed"]
+        self.assertGreaterEqual(bucket["retained_mb"], 3.0)
+        self.assertGreaterEqual(bucket["churn_mb"], 3.0)
+        first = payload["tests"][0]
+        self.assertLess(first["churn_mb"], 1.0)
+        self.assertLess(first["retained_mb"], 1.0)
+        # No double counting: bucket + windows reconcile with run totals.
+        self.assertEqual(
+            bucket["gcs"] + sum(t["gcs"] for t in payload["tests"]),
+            payload["gc_count"],
+        )
 
     def test_console_mode_reports_totals(self):
         code, out, _ = run_memory([], self.root)

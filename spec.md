@@ -947,11 +947,13 @@ literal placeholders fails the `.py` and generic literal fixtures.
 ## 28. `memory`
 
 ```
-crap4py memory [--top N] [--format console|json] [pytest args...]
+crap4py memory [--top N] [--format console|json] [--badge PATH]
+               [--badge-threshold MB] [pytest args...]
 ```
 
 Per-test allocation churn / GC attribution — port of the crap4dart
-`memory` command (upstream 3bae178bc0, phase 1). The command runs
+`memory` command (upstream 3bae178bc0, phase 1; attribution hardening and
+badge from 11551739c8, phase 2). The command runs
 `python -m pytest -p crap4py.memory_plugin` (the tap plugin is
 `PYTHONPATH`-injected; `PYTHONHASHSEED=0` is pinned for churn
 reproducibility) and parses the plugin's JSONL log:
@@ -969,9 +971,13 @@ reproducibility) and parses the plugin's JSONL log:
   and never a metric (upstream's conclusion, ported);
 - each test window covers pytest's `runtest_protocol` — setup + call +
   teardown, the analog of upstream's `testStart`..`testDone` — so fixture
-  allocations are attributed to the test; collection/import allocations
-  fall between windows and count towards run totals only (the loading-GC
-  rule);
+  allocations are attributed to the test; everything OUTSIDE the windows
+  (collection/import, session start/finish) goes to a separate
+  UNATTRIBUTED bucket: GC counts and collected objects (run totals minus
+  window sums), the largest out-of-window peak rise (churn) and the
+  out-of-window net delta (retained). The bucket is REPORTED — a console
+  line and a `json` `unattributed` object — and never pollutes file/test
+  totals (the upstream 11551739c8 window-only attribution rule);
 - attribution is EXACT where upstream inferred: nodeids carry the file,
   and window taps share one clock, so there is no dill-index suite
   mapping, no global clock-offset voting and no straggler reattribution —
@@ -987,14 +993,30 @@ Options:
 - `--format console|json` (default console)
   Output format; `json` keeps stdout JSON-only (pytest progress goes to
   stderr).
+- `--badge <path>`
+  Write a shields-style SVG badge (`memory churn | <N> MB`) with the
+  suite churn to this path; green at or below, yellow at most twice, red
+  above `--badge-threshold` MB. Missing parent directories are created;
+  a `Badge written to <path>` note goes to stderr.
+- `--badge-threshold <mb>` (default 500)
+  Churn threshold (MB) for the badge color; `< 0` is a usage error.
+
+The badge is written by the command itself (self-analyze:
+`crap4py memory --ignore=crap4py/test_assertions.py --badge
+badges/memory.svg`); the CI commit-badges job refreshes ONLY the
+CRAP/coverage badges (`git add badges/*.svg` finds `memory.svg` unchanged
+and skips it) — it never regenerates the memory badge.
 
 Console: a summary line `memory: N tests, M GCs, churn X MB peak live,
-retained ±Y MB`, then leaderboards — files by churn, tests by churn, tests
-by retained growth (leak suspects first). JSON: `test_count`, `gc_count`,
-`total_churn_mb`, `total_retained_mb`, `files` (`file`, `tests`,
-`churn_mb`, `retained_mb`, `gcs`) and `tests` (`nodeid`, `file`,
-`churn_mb`, `retained_mb`, `gcs`), MB rounded to 1 decimal; `files` and
-`tests` are untruncated, the console leaderboards are `--top`-limited.
+retained ±Y MB`, an unattributed line `unattributed (collection/session,
+outside test windows): X MB peak, ±Y MB retained, M GCs`, then
+leaderboards — files by churn, tests by churn, tests by retained growth
+(leak suspects first). JSON: `test_count`, `gc_count`, `total_churn_mb`,
+`total_retained_mb`, `unattributed` (`churn_mb`, `retained_mb`, `gcs`),
+`files` (`file`, `tests`, `churn_mb`, `retained_mb`, `gcs`) and `tests`
+(`nodeid`, `file`, `churn_mb`, `retained_mb`, `gcs`), MB rounded to 1
+decimal; `files` and `tests` are untruncated, the console leaderboards
+are `--top`-limited.
 
 The command is informational: it exits 0 after a run — even with failing
 or erroring tests (they still get records) — and 1 on usage errors (no
@@ -1005,16 +1027,22 @@ through it unchanged.
 
 Dogfood (this repo, `--ignore=crap4py/test_assertions.py` — that source
 module's `test_candidates(tree)` helper is miscollected by pytest, a
-pre-existing main quirk): 525 tests, 97 GCs, 27.1 MB churn over 29 test
-files, top file `tests/test_duplicates.py` 4.2 MB. Determinism: file-level
-churn identical across runs (0/29 differ); 2/525 tests jitter at the
-0.1 MB rounding boundary; GC counts moved 97 → 98.
+pre-existing main quirk; the re-exported name still errors at setup,
+harmless): two runs, 545 tests each, 27.7 = 27.7 MB churn over 29 test
+files, top file `tests/test_duplicates.py` 4.2 MB. Determinism:
+file-level churn identical across runs (29/29 files, 545/545 tests, 0.1
+MB rounding); GC counts moved 110 → 101 (never a metric); the
+unattributed collection/session bucket jitters (8.7–9.2 MB peak, ~8 MB
+retained — pytest's own import machinery), which is why it is reported
+separately instead of polluting file totals. `--badge badges/memory.svg`
+tracked the suite at 28 MB (green).
 
 ## 29. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
-- No badges, no IDE plugins.
+- No badge framework — the CI commit-badges job and the memory command's
+  `--badge` write plain SVGs directly (via `crap4py.badge`); no IDE plugins.
 - No support for non-`.py` files in CRAP analysis (the `similarity` scan
   reads any text per §27) or non-coverage.py formats.
 - No config file and no gate framework (crap4py is a flag-based single

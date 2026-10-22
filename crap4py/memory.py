@@ -21,8 +21,9 @@ Attribution is exact where upstream had to infer: pytest nodeids carry the
 file, and windows open/close inside the plugin (one clock), so there is no
 dill-index suite mapping, no global clock-offset voting, no straggler
 reattribution — those solve two-stream problems a same-process tap cannot
-have. Windows cover setup+call+teardown; collection/import allocations
-count towards run totals only.
+have. Windows cover setup+call+teardown; collection/import allocations and
+out-of-window GCs land in a separate unattributed bucket — reported, never
+polluting test/file totals (upstream 11551739c8's bucket rule).
 
 Informational only: always exits 0 after a run (even with failing tests);
 usage errors — no Python test suite found, no tests executed — exit 1.
@@ -40,6 +41,7 @@ import tempfile
 from pathlib import Path
 
 from .args import UsageErrorParser
+from .badge import badge as badge_svg
 
 # Shared with the pytest plugin (crap4py.memory_plugin reads this via
 # ``from .memory import LOG_ENV``); memory.py must not import the plugin —
@@ -49,7 +51,13 @@ LOG_ENV = "CRAP4PY_MEMORY_LOG"
 DEFAULT_TOP = 20
 FORMAT_CHOICES = ("console", "json")
 DEFAULT_FORMAT = "console"
+DEFAULT_BADGE_THRESHOLD_MB = 500.0
 _MB = 1000.0 * 1000.0
+
+# shields.io flat colors: green / yellow / red.
+_BADGE_GREEN = "#4c1"
+_BADGE_YELLOW = "#dfb317"
+_BADGE_RED = "#e05d44"
 
 # pytest exit codes that still produced per-test records worth reporting
 # (0 ok, 1 test failures, 2 interrupted); anything else is flagged.
@@ -62,6 +70,8 @@ def run(argv: list[str], project_root: Path) -> int:
     args, forwarded = parser.parse_known_args(argv)
     if args.top < 1:
         parser.error(f"--top must be >= 1, got {args.top}")
+    if args.badge_threshold < 0:
+        parser.error(f"--badge-threshold must be >= 0, got {args.badge_threshold}")
     if not _is_python_project(project_root):
         print(_no_suite_message(project_root), file=sys.stderr)
         return 1
@@ -78,6 +88,7 @@ def run(argv: list[str], project_root: Path) -> int:
         _print_json(report, args.top)
     else:
         _print_console(report, args.top)
+    _maybe_write_badge(report, args.badge, args.badge_threshold)
     return 0
 
 
@@ -95,6 +106,20 @@ def _build_parser() -> UsageErrorParser:
         choices=FORMAT_CHOICES,
         default=DEFAULT_FORMAT,
         help="output format (default console)",
+    )
+    parser.add_argument(
+        "--badge",
+        metavar="PATH",
+        help="write a shields-style SVG badge with the suite churn to this "
+        f"path (green at or below the --badge-threshold MB, yellow at most "
+        f"twice, red above; default threshold {DEFAULT_BADGE_THRESHOLD_MB:g})",
+    )
+    parser.add_argument(
+        "--badge-threshold",
+        type=float,
+        default=DEFAULT_BADGE_THRESHOLD_MB,
+        metavar="MB",
+        help=f"churn threshold (MB) for the badge color (default {DEFAULT_BADGE_THRESHOLD_MB:g})",
     )
     parser.add_argument("rest", nargs="*", help="paths and flags forwarded to pytest")
     return parser
@@ -156,13 +181,52 @@ def _no_suite_message(root: Path) -> str:
     )
 
 
+# --- badge ----------------------------------------------------------------------
+
+
+def _badge_color(churn_mb: float, threshold_mb: float) -> str:
+    """Green at or below the threshold, yellow at most twice, red above."""
+    if churn_mb <= threshold_mb:
+        return _BADGE_GREEN
+    if churn_mb <= 2 * threshold_mb:
+        return _BADGE_YELLOW
+    return _BADGE_RED
+
+
+def _maybe_write_badge(report: dict, badge_path: str | None, threshold_mb: float) -> None:
+    """Writes the SVG badge when --badge was given (stderr note, like upstream)."""
+    if not badge_path:
+        return
+    churn_mb = report["total_churn_bytes"] / _MB
+    path = Path(badge_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        badge_svg("memory churn", f"{round(churn_mb)} MB", _badge_color(churn_mb, threshold_mb)),
+        encoding="utf-8",
+    )
+    print(f"Badge written to {path}", file=sys.stderr)
+
+
 # --- report ---------------------------------------------------------------------
+
+
+def _record_of(records: list[dict], event: str) -> dict:
+    """The single record of this event kind, or an empty dict."""
+    return next((r for r in records if r.get("event") == event), {})
+
+
+def _total(totals: dict, tests: list[dict], key: str) -> float:
+    """Session-total for a key, falling back to the per-test sum."""
+    return totals.get(key, sum(t.get(key, 0) for t in tests))
 
 
 def build_report(records: list[dict]) -> dict:
     """Aggregate JSONL records into the report shape (files in first-seen order)."""
     tests = [r for r in records if r.get("event") == "test"]
-    totals = next((r for r in records if r.get("event") == "totals"), {})
+    totals = _record_of(records, "totals")
+    # The plugin's out-of-window bucket (collection/import, session
+    # start/finish): reported as-is, never merged into file/test totals.
+    bucket = _record_of(records, "unattributed")
     files: dict[str, dict] = {}
     for record in tests:
         entry = files.setdefault(
@@ -181,13 +245,18 @@ def build_report(records: list[dict]) -> dict:
         entry["tests"] += 1
     return {
         "test_count": len(tests),
-        "gc_count": totals.get("gcs", sum(t.get("gcs", 0) for t in tests)),
-        "gc_collected": totals.get("gc_collected", sum(t.get("gc_collected", 0) for t in tests)),
         # Retained totals come from the session record: they include the
         # collection/import allocations the per-test windows never see.
-        "total_retained_bytes": totals.get(
-            "retained_bytes", sum(t.get("retained_bytes", 0) for t in tests)
-        ),
+        "gc_count": _total(totals, tests, "gcs"),
+        "gc_collected": _total(totals, tests, "gc_collected"),
+        "total_retained_bytes": _total(totals, tests, "retained_bytes"),
+        "total_churn_bytes": sum(f["churn_bytes"] for f in files.values()),
+        "unattributed": {
+            "churn_bytes": bucket.get("churn_bytes", 0),
+            "retained_bytes": bucket.get("retained_bytes", 0),
+            "gcs": bucket.get("gcs", 0),
+            "gc_collected": bucket.get("gc_collected", 0),
+        },
         "files": list(files.values()),
         "tests": tests,
     }
@@ -221,11 +290,16 @@ def _signed_mb(num_bytes: float) -> str:
 
 
 def _print_console(report: dict, top: int) -> None:
-    churn_total = sum(f["churn_bytes"] for f in report["files"])
+    bucket = report["unattributed"]
     print(
         f"memory: {report['test_count']} tests, {report['gc_count']} GCs, "
-        f"churn {_mb(churn_total)} MB peak live, "
+        f"churn {_mb(report['total_churn_bytes'])} MB peak live, "
         f"retained {_signed_mb(report['total_retained_bytes'])} MB"
+    )
+    print(
+        f"unattributed (collection/session, outside test windows): "
+        f"{_mb(bucket['churn_bytes'])} MB peak, "
+        f"{_signed_mb(bucket['retained_bytes'])} MB retained, {bucket['gcs']} GCs"
     )
     print()
     _print_table(
@@ -258,7 +332,7 @@ def _print_table(title: str, rows: list[dict]) -> None:
 
 
 def _print_json(report: dict, top: int) -> None:
-    churn_total = sum(f["churn_bytes"] for f in report["files"])
+    bucket = report["unattributed"]
 
     def rounded(row: dict) -> dict:
         return {
@@ -272,8 +346,13 @@ def _print_json(report: dict, top: int) -> None:
             {
                 "test_count": report["test_count"],
                 "gc_count": report["gc_count"],
-                "total_churn_mb": round(churn_total / _MB, 1),
+                "total_churn_mb": round(report["total_churn_bytes"] / _MB, 1),
                 "total_retained_mb": round(report["total_retained_bytes"] / _MB, 1),
+                "unattributed": {
+                    "churn_mb": round(bucket["churn_bytes"] / _MB, 1),
+                    "retained_mb": round(bucket["retained_bytes"] / _MB, 1),
+                    "gcs": bucket["gcs"],
+                },
                 "files": [
                     {"file": f["file"], "tests": f["tests"], **rounded(f)} for f in report["files"]
                 ],
