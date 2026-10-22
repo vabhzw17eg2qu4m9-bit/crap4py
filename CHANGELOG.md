@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.15.0...v0.16.0) (2026-10-22)
+
+
+### Features
+
+* **memory:** per-test GC/alloc attribution ([#44](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/44)) ([02588ab](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/02588ab1e7a1de40c16a9f2808b477c8e209228f))
+
 ## [0.15.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.14.0...v0.15.0) (2026-10-20)
 
 
