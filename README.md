@@ -4,6 +4,7 @@
 [![version](https://img.shields.io/github/v/release/vabhzw17eg2qu4m9-bit/crap4py?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/releases)
 ![CRAP](badges/crap.svg)
 ![coverage](badges/coverage.svg)
+![memory churn](badges/memory.svg)
 
 **CRAP (Change Risk Anti-Patterns) metric for Python** — a port of
 [`crap4java`](https://github.com/crap4java/crap4java) / `crap4dart`.
@@ -323,15 +324,17 @@ of the test window (alloc-and-free cycles net out) and retained is the
 signed net delta — the old-gen-growth analog. Windows cover
 setup + call + teardown (the analog of `testStart`..`testDone`), so
 fixture allocations are attributed to the test; collection/import
-allocations count towards run totals only. Attribution is exact where
-upstream had to infer: pytest nodeids carry the file and the window taps
-share one clock, so there is no suite-index mapping, no clock-offset
-voting and no straggler reattribution.
+allocations and out-of-window GCs land in a separate unattributed bucket
+— reported in every report, never polluting file/test totals. Attribution
+is exact where upstream had to infer: pytest nodeids carry the file and
+the window taps share one clock, so there is no suite-index mapping, no
+clock-offset voting and no straggler reattribution.
 
 ```bash
 crap4py memory                  # run the suite, print the leaderboards
 crap4py memory --top 5          # shorter leaderboards
 crap4py memory --format json    # machine-readable report (JSON-only stdout)
+crap4py memory --badge badges/memory.svg   # shields-style churn badge
 crap4py memory tests/ --ignore=tests/test_x.py   # unknown args go to pytest
 ```
 
@@ -339,10 +342,14 @@ Informational only — always exits 0 after a run (failing tests included);
 usage errors (no Python test suite found, no tests executed) exit 1.
 `PYTHONHASHSEED=0` is pinned in the run for churn reproducibility. The
 current interpreter must have pytest installed; unittest-style suites run
-through it unchanged. Dogfood: 525 tests, 27.1 MB churn across 29 test
+through it unchanged. Dogfood: 545 tests, 27.7 MB churn across 29 test
 files (top: `tests/test_duplicates.py` 4.2 MB); file-level churn identical
-across runs, 2/525 tests jitter at the 0.1 MB rounding boundary, GC counts
-moved 97 → 98 — never a metric.
+across runs (29/29 files, 545/545 tests over two runs), the unattributed
+collection/session bucket jitters (8.7–9.2 MB peak) and GC counts moved
+110 → 101 — never a metric. `badges/memory.svg` tracks this suite
+(green, `--badge-threshold` default 500 MB); the commit-badges workflow
+refreshes only the CRAP/coverage badges — the memory badge is written by
+`crap4py memory --badge` itself.
 
 ## `crap4py skill`
 

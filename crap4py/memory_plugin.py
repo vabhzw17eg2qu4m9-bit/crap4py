@@ -23,8 +23,10 @@ byte metric would be blind. Sampling happens inside the plugin hooks, so
 window bounds share one clock: upstream needs dill-index suite mapping,
 global clock-offset voting and straggler reattribution only because GC
 rows arrive on a separate VM clock, which a same-process tap cannot have.
-Collection/import allocations fall between windows and count towards run
-totals only (the upstream loading-GC rule).
+Collection/import allocations fall between windows and land in a separate
+UNATTRIBUTED record (``event: "unattributed"``: GC counts plus the largest
+out-of-window peak rise and net delta) — reported by the memory command,
+never polluting test/file totals (the upstream phase-2 bucket rule).
 
 Requires pytest >= 7 (``wrapper`` hookimpl).
 """
@@ -44,6 +46,14 @@ _gc_events = 0
 _gc_collected = 0
 _session_start_bytes = 0
 _test_count = 0
+# Unattributed bucket: activity OUTSIDE the per-test windows (collection/
+# import, session start/finish). churn_bytes = the largest peak rise over
+# any out-of-window gap; the rest are run totals minus per-test sums.
+_bucket_churn = 0
+_gap_baseline = 0
+_attr_gcs = 0
+_attr_collected = 0
+_attr_retained = 0
 
 
 def _on_gc(phase: str, info: dict) -> None:  # pragma: no cover - gc tap
@@ -71,14 +81,25 @@ def pytest_configure(config: pytest.Config) -> None:
     tracemalloc.start()
     gc.callbacks.append(_on_gc)
     _session_start_bytes = tracemalloc.get_traced_memory()[0]
+    # The first out-of-window gap (collection/import) starts here: reset
+    # the peak so it only measures post-configure allocations.
+    _gap_baseline = _session_start_bytes
+    _bucket_churn = 0
+    tracemalloc.reset_peak()
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
-    global _test_count
+    global _test_count, _bucket_churn, _gap_baseline
+    global _attr_gcs, _attr_collected, _attr_retained
     log_path = _log_path(item.config)
     if log_path is None:
         return (yield)
+    # Close the preceding out-of-window gap: peak has tracked allocations
+    # since the last window's end (or session start), baseline is that
+    # same moment's footprint.
+    _, gap_peak = tracemalloc.get_traced_memory()
+    _bucket_churn = max(_bucket_churn, gap_peak - _gap_baseline)
     baseline = tracemalloc.get_traced_memory()[0]
     gc_before = (_gc_events, _gc_collected)
     tracemalloc.reset_peak()
@@ -87,6 +108,7 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
     finally:
         current, peak = tracemalloc.get_traced_memory()
         _test_count += 1
+        retained = current - baseline
         _record(
             log_path,
             {
@@ -94,17 +116,27 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
                 "nodeid": item.nodeid,
                 "file": item.nodeid.split("::", 1)[0],
                 "churn_bytes": peak - baseline,
-                "retained_bytes": current - baseline,
+                "retained_bytes": retained,
                 "gcs": _gc_events - gc_before[0],
                 "gc_collected": _gc_collected - gc_before[1],
             },
         )
+        _attr_gcs += _gc_events - gc_before[0]
+        _attr_collected += _gc_collected - gc_before[1]
+        _attr_retained += retained
+        # Reopen the out-of-window gap for the stretch after this test.
+        _gap_baseline = current
+        tracemalloc.reset_peak()
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    global _bucket_churn
     log_path = _log_path(session.config)
     if log_path is None:
         return
+    final, gap_peak = tracemalloc.get_traced_memory()
+    # Close the last gap: whatever happened after the final test.
+    _bucket_churn = max(_bucket_churn, gap_peak - _gap_baseline)
     _record(
         log_path,
         {
@@ -112,7 +144,17 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             "tests": _test_count,
             "gcs": _gc_events,
             "gc_collected": _gc_collected,
-            "retained_bytes": tracemalloc.get_traced_memory()[0] - _session_start_bytes,
+            "retained_bytes": final - _session_start_bytes,
+        },
+    )
+    _record(
+        log_path,
+        {
+            "event": "unattributed",
+            "gcs": _gc_events - _attr_gcs,
+            "gc_collected": _gc_collected - _attr_collected,
+            "churn_bytes": _bucket_churn,
+            "retained_bytes": (final - _session_start_bytes) - _attr_retained,
         },
     )
     gc.callbacks.remove(_on_gc)
