@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.16.0...v0.17.0) (2026-10-22)
+
+
+### Features
+
+* **memory:** unattributed bucket + badge ([#46](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/46)) ([0d385e8](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/0d385e8ac3a810b19d8aeada46a338bc1020863f))
+
 ## [0.16.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.15.0...v0.16.0) (2026-10-22)
 
 
