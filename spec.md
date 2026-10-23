@@ -1008,14 +1008,22 @@ CRAP/coverage badges (`git add badges/*.svg` finds `memory.svg` unchanged
 and skips it) — it never regenerates the memory badge.
 
 Console: a summary line `memory: N tests, M GCs, churn X MB peak live,
-retained ±Y MB`, an unattributed line `unattributed (collection/session,
+retained ±Y MB` followed by `, allocated Z MB` when the allocation
+volume is positive, an unattributed line `unattributed (collection/session,
 outside test windows): X MB peak, ±Y MB retained, M GCs`, then
-leaderboards — files by churn, tests by churn, tests by retained growth
+leaderboards — files by allocation volume (peak live traced MB), tests
+by allocation volume (peak live traced MB), tests by retained growth
 (leak suspects first). JSON: `test_count`, `gc_count`, `total_churn_mb`,
-`total_retained_mb`, `unattributed` (`churn_mb`, `retained_mb`, `gcs`),
+`total_allocated_mb`, `total_retained_mb`, `unattributed` (`churn_mb`,
+`retained_mb`, `gcs`),
 `files` (`file`, `tests`, `churn_mb`, `retained_mb`, `gcs`) and `tests`
 (`nodeid`, `file`, `churn_mb`, `retained_mb`, `gcs`), MB rounded to 1
-decimal; `files` and `tests` are untruncated, the console leaderboards
+decimal; `total_allocated_mb` equals `total_churn_mb` — tracemalloc
+exposes no cumulative gross-allocation counter, so the peak live traced
+footprint is the documented honest allocation-volume proxy (upstream
+b7c227d's `totalAllocatedMb`; the dart engine makes the same move, its
+allocated volume being the reclaimed-new-gen churn). `files` and
+`tests` are untruncated, the console leaderboards
 are `--top`-limited.
 
 The command is informational: it exits 0 after a run — even with failing
