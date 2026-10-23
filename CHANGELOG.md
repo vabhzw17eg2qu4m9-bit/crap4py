@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.17.0...v0.18.0) (2026-10-23)
+
+
+### Features
+
+* **memory:** allocated-volume reporting (upstream b7c227d reporting half) ([#48](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/48)) ([c6cfc7f](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/c6cfc7f7d19b8cfc3c893c12906dac72f93bb0c7))
+
 ## [0.17.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.16.0...v0.17.0) (2026-10-22)
 
 
