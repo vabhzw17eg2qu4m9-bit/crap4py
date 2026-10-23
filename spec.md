@@ -39,6 +39,7 @@ crap4py duplicates [opts] [p..] Flag duplicated lines (percentage) or clone grou
 crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
 crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
 crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
+crap4py tuple-signatures [p.] Flag inline tuple annotations in function signatures.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -52,7 +53,7 @@ Unknown flags → usage error (exit 1).
 Subcommands (`profile`, `skill`, `file-naming`, `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `mutation`, `similarity`, `memory`) are
+`duplicates`, `mutation`, `similarity`, `memory`, `tuple-signatures`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
 options → usage error (exit 1).
@@ -180,7 +181,7 @@ Exit `2` when `max(numeric CRAP) > threshold`, with
 |------|------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or empty selection).             |
 | `1`  | Usage error: bad flags, `--changed` + paths, unreadable source. |
-| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §26). |
+| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §21–§22, §24–§26, §29). |
 
 ## 11. `--run-tests`
 
@@ -916,7 +917,7 @@ defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
 
 The command is informational and ALWAYS exits 0 — the exploration tool for
 tuning thresholds; usage/flag errors exit 1. There is no config file and
-no `check` pipeline (§29), so upstream's gate config maps to the
+no `check` pipeline (§30), so upstream's gate config maps to the
 strictly validated kebab-case flags: `--jaccard`/`--containment` outside
 0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
 are usage errors. Opt-in by nature: nothing in the default analyze path
@@ -1045,7 +1046,51 @@ retained — pytest's own import machinery), which is why it is reported
 separately instead of polluting file totals. `--badge badges/memory.svg`
 tracked the suite at 28 MB (green).
 
-## 29. Non-goals
+## 29. `tuple-signatures`
+
+```
+crap4py tuple-signatures [paths...] [--max-fields N]
+```
+
+Flags inline tuple type annotations in function signatures — port of the
+crap4dart record gates (4d844a4 `inline_record_types` + `record_size`),
+adapted to Python. A finding is any `tuple[...]` / `typing.Tuple[...]`
+subscript with an actual tuple slice — the bare `Tuple` name from
+`from typing import Tuple` counts too — in any signature: module functions,
+methods, async functions and nested functions; parameter annotations
+(positional, keyword-only, `*args`, `**kw`) and return annotations; and
+shapes nested inside generic type arguments (`dict[str, tuple[int, int]]`,
+`Optional[tuple[int, int]]`, `X | None` unions, `Callable` argument lists).
+Only the outermost shape of a nested tuple group is reported: an inner
+tuple inside an already-flagged shape is fixed by the same shape
+extraction (upstream semantics). Dart's two annotation kinds collapse
+here: every Python tuple annotation is unnamed-by-nature (Python has no
+named-field tuple syntax), so upstream's "unnamed fields" kind and "inline
+shape" kind are one check.
+
+Adaptation notes:
+
+- **Variadic tuples** — `tuple[X, ...]` is a homogeneous sequence, not a
+  record shape, and is never flagged (pinned by test).
+- **Blessed forms** — `NamedTuple`/`dataclass`/`TypedDict` declarations
+  referenced by name are the port of Dart's record typedefs; their
+  class-body annotations are declarations, not signatures, and fall
+  outside the scan (pinned by test).
+- **Positional access (`.$N`) skipped** — upstream's third kind has no
+  honest Python analog: `t[0]` is ordinary sequence indexing and would
+  fire on every list.
+- **`--max-fields` (default 5)** — upstream's `record_size` cap folds into
+  this gate: a shape with more than N elements carries an additional
+  `N fields > max M` note instead of a separate violation.
+- Bare `tuple` and single-element `tuple[int]` (plain-name slice) are not
+  flagged; string/forward-reference annotations are not parsed.
+
+Test files are skipped; the default selection is the normal §4 selection.
+Output: `<file>:<line>: inline tuple type 'tuple[int, int]' in signature —
+declare the shape as a NamedTuple/dataclass and reference it by name` plus
+a summary. Exit `2` iff findings.
+
+## 30. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).

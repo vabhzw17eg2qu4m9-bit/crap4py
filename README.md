@@ -73,6 +73,7 @@ crap4py duplicates           # flag files over the duplicated-lines threshold
 crap4py mutation             # mutation testing: re-run tests per mutated operator
 crap4py similarity           # scan for near-duplicate files (console/json)
 crap4py memory               # per-test alloc churn + GC attribution (informational)
+crap4py tuple-signatures     # flag inline tuple annotations in function signatures
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -169,12 +170,21 @@ All exit `2` iff violations, `1` on usage errors.
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files] [--report percentage\|clones] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--report clones` switches to one violation per non-overlapping clone group (PMD CPD style). `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization, `--ignore-identifiers`/`--ignore-imports`/`--skip-duplicate-files` are the CPD-parity knobs (below). |
 | `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
+| `tuple-signatures [--max-fields N] [paths...]` | a function signature (parameter or return annotation) contains an inline tuple shape — `tuple[int, str]` / `typing.Tuple[...]` (bare `Tuple` counts; variadic `tuple[X, ...]` exempt; nested-in-type-args included, outermost reported); shapes with more than N (default 5) elements add an over-cap note. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
 since a partial file set yields false positives. `banned-imports` pairs
 `--from`/`--forbid` in CLI order (unequal counts → exit `1`); with no rules
 it passes and says so.
+
+`tuple-signatures` is the port of crap4dart's record gates (4d844a4,
+`inline_record_types` + `record_size`): an anonymous record shape maps to an
+inline tuple annotation, and the named forms (`NamedTuple`, `dataclass`,
+`TypedDict`) are the blessed typedefs. Upstream's unnamed-field kind
+collapses into the inline-shape kind (Python tuples carry no field names),
+and the `.$N` positional-access kind is skipped — `t[0]` is ordinary
+sequence indexing, not a record fingerprint.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -409,7 +419,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -472,6 +482,7 @@ crap4py/
     magic_constants.py    `magic-constants` gate subcommand (magic literals)
     test_assertions.py    `test-assertions` gate subcommand (assertion-free tests)
     folder_structure.py   `folder-structure` gate subcommand (loose-file sprawl)
+    tuple_signatures.py   `tuple-signatures` gate subcommand (inline tuple shapes)
     mutation.py           `mutation` gate subcommand (per-mutant test re-runs)
     imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand
