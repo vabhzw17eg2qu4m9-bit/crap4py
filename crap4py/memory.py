@@ -14,7 +14,11 @@ new-gen MB — GROSS volume that flowed through — while Python has no cheap
 gross-allocation counter, so churn here is the PEAK LIVE traced footprint
 of the test window (deterministic per code; alloc-and-free cycles net out)
 and ``retained`` is the signed net delta — the old-gen-growth / leak
-suspect analog. Like upstream: GC counts are machine-dependent and never a
+suspect analog. Upstream 0.17.0's ``totalAllocatedMb`` maps to
+``total_allocated_mb`` = ``total_churn_mb``: with no cumulative gross
+counter, the peak-live proxy is the honest allocation volume (mirrors
+the dart engine, where allocated MB is the reclaimed-new-gen churn).
+Like upstream: GC counts are machine-dependent and never a
 metric; churn is a deterministic function of the code.
 
 Attribution is exact where upstream had to infer: pytest nodeids carry the
@@ -243,6 +247,7 @@ def build_report(records: list[dict]) -> dict:
         for key in ("churn_bytes", "retained_bytes", "gcs", "gc_collected"):
             entry[key] += record.get(key, 0)
         entry["tests"] += 1
+    total_churn_bytes = sum(f["churn_bytes"] for f in files.values())
     return {
         "test_count": len(tests),
         # Retained totals come from the session record: they include the
@@ -250,7 +255,12 @@ def build_report(records: list[dict]) -> dict:
         "gc_count": _total(totals, tests, "gcs"),
         "gc_collected": _total(totals, tests, "gc_collected"),
         "total_retained_bytes": _total(totals, tests, "retained_bytes"),
-        "total_churn_bytes": sum(f["churn_bytes"] for f in files.values()),
+        "total_churn_bytes": total_churn_bytes,
+        # Upstream b7c227d's allocation volume. tracemalloc exposes no
+        # cumulative gross-allocation counter, so the churn proxy IS the
+        # allocation volume here — same rule as the dart engine, where
+        # allocated MB is the reclaimed-new-gen churn.
+        "total_allocated_mb": round(total_churn_bytes / _MB, 1),
         "unattributed": {
             "churn_bytes": bucket.get("churn_bytes", 0),
             "retained_bytes": bucket.get("retained_bytes", 0),
@@ -291,10 +301,16 @@ def _signed_mb(num_bytes: float) -> str:
 
 def _print_console(report: dict, top: int) -> None:
     bucket = report["unattributed"]
+    allocated = (
+        f", allocated {report['total_allocated_mb']:.1f} MB"
+        if report["total_allocated_mb"] > 0
+        else ""
+    )
     print(
         f"memory: {report['test_count']} tests, {report['gc_count']} GCs, "
         f"churn {_mb(report['total_churn_bytes'])} MB peak live, "
         f"retained {_signed_mb(report['total_retained_bytes'])} MB"
+        f"{allocated}"
     )
     print(
         f"unattributed (collection/session, outside test windows): "
@@ -303,12 +319,12 @@ def _print_console(report: dict, top: int) -> None:
     )
     print()
     _print_table(
-        "files by allocation churn (peak live traced MB)",
+        "files by allocation volume (peak live traced MB)",
         _top(report["files"], "churn_bytes", "file", top),
     )
     print()
     _print_table(
-        "tests by allocation churn (peak live traced MB)",
+        "tests by allocation volume (peak live traced MB)",
         _top(report["tests"], "churn_bytes", "nodeid", top),
     )
     print()
@@ -347,6 +363,7 @@ def _print_json(report: dict, top: int) -> None:
                 "test_count": report["test_count"],
                 "gc_count": report["gc_count"],
                 "total_churn_mb": round(report["total_churn_bytes"] / _MB, 1),
+                "total_allocated_mb": report["total_allocated_mb"],
                 "total_retained_mb": round(report["total_retained_bytes"] / _MB, 1),
                 "unattributed": {
                     "churn_mb": round(bucket["churn_bytes"] / _MB, 1),

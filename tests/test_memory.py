@@ -258,9 +258,59 @@ class ConsoleJsonTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             _print_console(build_report(records), 3)
         churn_table = (
-            out.getvalue().split("tests by allocation churn")[1].split("retained growth")[0]
+            out.getvalue().split("tests by allocation volume")[1].split("retained growth")[0]
         )
         self.assertEqual(churn_table.count("tests/a_test.py::t"), 3)
+
+
+class AllocatedVolumeTest(unittest.TestCase):
+    """Upstream b7c227d reporting semantics: allocation volume in the
+    JSON report and console headline, churn leaderboards retitled to
+    allocation volume. Killing test: the JSON field must be present and
+    sourced from the churn total — dropping the field or pointing it at
+    any other total fails here (churn 4.0 != retained -0.5)."""
+
+    def _report(self) -> dict:
+        records = [
+            _test_record("tests/a_test.py::heavy", 4_000_000, -500_000, gcs=3),
+            _test_record("tests/a_test.py::quiet", 0, 0),
+        ]
+        return build_report(records)
+
+    def test_json_total_allocated_mb_is_the_churn_total(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_json(self._report(), DEFAULT_TOP)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["total_allocated_mb"], payload["total_churn_mb"])
+        self.assertEqual(payload["total_allocated_mb"], 4.0)
+        self.assertNotEqual(payload["total_allocated_mb"], payload["total_retained_mb"])
+
+    def test_console_headline_names_allocation_when_positive(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_console(self._report(), DEFAULT_TOP)
+        self.assertIn(
+            "memory: 2 tests, 3 GCs, churn 4.0 MB peak live, retained -0.5 MB, allocated 4.0 MB",
+            out.getvalue(),
+        )
+
+    def test_console_headline_omits_allocation_when_zero(self):
+        records = [_test_record("tests/a_test.py::retained_only", 0, 100_000)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_console(build_report(records), DEFAULT_TOP)
+        text = out.getvalue()
+        self.assertIn("churn 0.0 MB peak live", text)
+        self.assertNotIn("allocated", text)
+
+    def test_churn_leaderboards_are_retitled_allocation_volume(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_console(self._report(), DEFAULT_TOP)
+        text = out.getvalue()
+        self.assertIn("files by allocation volume (peak live traced MB)", text)
+        self.assertIn("tests by allocation volume (peak live traced MB)", text)
 
 
 class UsageErrorTest(unittest.TestCase):
