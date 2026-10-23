@@ -35,6 +35,7 @@ _SUBCOMMANDS = (
     "mutation",
     "similarity",
     "memory",
+    "tuple-signatures",
 )
 
 _USAGE = """\
@@ -57,6 +58,7 @@ Usage:
   crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
   crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
   crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
+  crap4py tuple-signatures [p.] Flag inline tuple annotations in function signatures.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -171,6 +173,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         similarity,
         skill,
         test_assertions,
+        tuple_signatures,
         unused_code,
         unused_files,
         weight_of_class,
@@ -194,5 +197,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "mutation": mutation.run,
         "similarity": similarity.run,
         "memory": memory.run,
+        "tuple-signatures": tuple_signatures.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
