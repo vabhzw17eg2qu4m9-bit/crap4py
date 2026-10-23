@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.18.0...v0.19.0) (2026-10-23)
+
+
+### Features
+
+* **gate:** tuple-signatures gate ([#50](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/50)) ([03eb978](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/03eb978d35a1a9df0bd9cca8c24dbf19031f6624))
+
 ## [0.18.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.17.0...v0.18.0) (2026-10-23)
 
 
