@@ -46,6 +46,7 @@ from pathlib import Path
 
 from .args import UsageErrorParser
 from .badge import badge as badge_svg
+from .constants import DEFAULT_FORMAT
 
 # Shared with the pytest plugin (crap4py.memory_plugin reads this via
 # ``from .memory import LOG_ENV``); memory.py must not import the plugin —
@@ -53,8 +54,7 @@ from .badge import badge as badge_svg
 LOG_ENV = "CRAP4PY_MEMORY_LOG"
 
 DEFAULT_TOP = 20
-FORMAT_CHOICES = ("console", "json")
-DEFAULT_FORMAT = "console"
+FORMAT_CHOICES = (DEFAULT_FORMAT, "json")
 DEFAULT_BADGE_THRESHOLD_MB = 500.0
 _MB = 1000.0 * 1000.0
 

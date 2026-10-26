@@ -10,12 +10,12 @@ from pathlib import Path
 from . import __version__
 from .analyzer import analyze
 from .args import UsageErrorParser
+from .constants import DEFAULT_COVERAGE
 from .files import changed_files, expand_paths, find_source_files
 from .report import format_report
 from .runtests import run_tests
 
 DEFAULT_THRESHOLD = 8.0
-DEFAULT_COVERAGE = "coverage.json"
 
 _SUBCOMMANDS = (
     "profile",
@@ -29,6 +29,7 @@ _SUBCOMMANDS = (
     "unused-files",
     "banned-imports",
     "magic-constants",
+    "scattered-constants",
     "test-assertions",
     "folder-structure",
     "duplicates",
@@ -53,6 +54,7 @@ Usage:
   crap4py unused-files [path]  Check for source files never imported.
   crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
   crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
+  crap4py scattered-constants  Flag literals repeated across 3+ distinct files.
   crap4py test-assertions [..] Flag test bodies without assertion calls.
   crap4py duplicates [opts] [p..] Flag files whose duplicated lines exceed a threshold.
   crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
@@ -170,6 +172,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         mutation,
         nesting,
         profile,
+        scattered_constants,
         similarity,
         skill,
         test_assertions,
@@ -191,6 +194,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "unused-files": unused_files.run,
         "banned-imports": banned_imports.run,
         "magic-constants": magic_constants.run,
+        "scattered-constants": scattered_constants.run,
         "test-assertions": test_assertions.run,
         "folder-structure": folder_structure.run,
         "duplicates": duplicates.run,

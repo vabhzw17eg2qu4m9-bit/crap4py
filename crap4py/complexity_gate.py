@@ -18,6 +18,7 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .cognitive import cognitive_complexity
 from .complexity import cyclomatic_complexity
+from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
 
 MAX_COMPLEXITY = 10
@@ -56,7 +57,7 @@ def run(argv: list[str], project_root: Path) -> int:
         expand_paths(args.paths, project_root) if args.paths else find_source_files(project_root)
     )
     if not files:
-        print("No Python files to check.")
+        print(NO_FILES_MESSAGE)
         return 0
     result = check_files(files, project_root, args.metric, args.max)
     for violation in result.violations:

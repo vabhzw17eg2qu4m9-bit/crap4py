@@ -68,6 +68,7 @@ crap4py unused-code          # check for unused private module declarations
 crap4py unused-files         # check for source files never imported
 crap4py banned-imports       # enforce --from/--forbid import boundaries
 crap4py magic-constants      # flag hex colors outside constants and repeated literals
+crap4py scattered-constants  # flag literals repeated across 3+ distinct files
 crap4py test-assertions      # flag test bodies without assertion calls
 crap4py duplicates           # flag files over the duplicated-lines threshold
 crap4py mutation             # mutation testing: re-run tests per mutated operator
@@ -166,6 +167,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py` re-exports count; `__init__.py`/`__main__.py` exempt). |
 | `banned-imports [--from GLOB --forbid GLOB [--message MSG]]... [paths...]` | a file matching `from` imports something matching `forbid` (raw dotted name or resolved project path). |
 | `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
+| `scattered-constants [--min-files N] [--min-length N] [--min-value N] [paths...]` | a value with an existing ALL_CAPS constant anywhere is re-introduced hardcoded — bare literal or duplicate declaration, any count, even once (`hardcoded <v> duplicates constant \`NAME\` (file:line)`); or a constant-less literal (string ≥N chars, default 4; number of magnitude >N, default 100) spans N distinct files (default 3) — one finding per occurrence (dict keys, index strings, match-case patterns skipped; `1_000` and `1000` are one value). |
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N]` | a package directory has more than N (default 0) `.py` files directly (`__init__.py`/`__main__.py` not counted). |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files] [--report percentage\|clones] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--report clones` switches to one violation per non-overlapping clone group (PMD CPD style). `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization, `--ignore-identifiers`/`--ignore-imports`/`--skip-duplicate-files` are the CPD-parity knobs (below). |
@@ -185,6 +187,27 @@ inline tuple annotation, and the named forms (`NamedTuple`, `dataclass`,
 collapses into the inline-shape kind (Python tuples carry no field names),
 and the `.$N` positional-access kind is skipped — `t[0]` is ordinary
 sequence indexing, not a record fingerprint.
+
+`scattered-constants` is the corpus-wide sibling of `magic-constants`
+(port of crap4dart e766d68, `scattered_constants`), with two finding kinds.
+**Constant regression**: once a named constant for a value exists anywhere
+(module/class-level ALL_CAPS with a plain literal value, first declaration
+wins), every hardcoded re-introduction — bare literal or duplicate
+declaration in another file — flags immediately at any count, naming the
+constant and its `file:line` to reference; the winning declaration itself
+never flags. **Scattered literal**: with no constant yet, the gate counts
+DISTINCT files per literal value and flags every occurrence once the value
+spans `--min-files` files — the "change `86400` in every service" hazard
+that a once-per-file literal hides from every other gate. Values compare
+semantically (`1_000`, `1000` and `0x3E8` are one fact; ints and floats
+stay distinct). Adaptations: import specifiers are structural references
+(upstream skips import/export/part URIs) but are not string literals in
+Python, so nothing to skip; Python docstrings are string-literal
+statements, so doc-text repeats surface as findings (upstream's Dart doc
+comments are invisible to its gate); upstream's `ignore` option is not
+ported (flag-based surface, no config system). Test files and
+build/dist/venv trees are excluded by the default selection;
+identifier-position strings are exempt, per upstream semantics.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -419,7 +442,7 @@ Sorted by CRAP descending; `N/A` entries last.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations. |
 
 ## Cyclomatic complexity rules
 
@@ -480,6 +503,8 @@ crap4py/
     unused_files.py       `unused-files` gate subcommand (never imported)
     banned_imports.py     `banned-imports` gate subcommand (import boundaries)
     magic_constants.py    `magic-constants` gate subcommand (magic literals)
+    scattered_constants.py `scattered-constants` gate subcommand (cross-file literal repeats)
+    constants.py          shared gate-output literal facts (scattered-constants dogfood)
     test_assertions.py    `test-assertions` gate subcommand (assertion-free tests)
     folder_structure.py   `folder-structure` gate subcommand (loose-file sprawl)
     tuple_signatures.py   `tuple-signatures` gate subcommand (inline tuple shapes)

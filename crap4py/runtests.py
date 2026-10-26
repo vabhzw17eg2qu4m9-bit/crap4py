@@ -6,6 +6,8 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from .constants import DEFAULT_COVERAGE
+
 PathLike = str | Path
 
 
@@ -38,6 +40,6 @@ def _run(cmd: Sequence[str], cwd: str) -> subprocess.CompletedProcess:
 
 
 def _emit_json(cwd: str) -> None:
-    result = _run(["coverage", "json", "-o", "coverage.json"], cwd)
+    result = _run(["coverage", "json", "-o", DEFAULT_COVERAGE], cwd)
     if result.returncode != 0:
         raise RuntimeError(f"coverage json failed:\n{result.stdout}\n{result.stderr}")

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
+from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
 from .imports import from_import_paths, package_root, resolve_dotted
 
@@ -63,7 +64,7 @@ def run(argv: list[str], project_root: Path) -> int:
         expand_paths(args.paths, project_root) if args.paths else find_source_files(project_root)
     )
     if not files:
-        print("No Python files to check.")
+        print(NO_FILES_MESSAGE)
         return 0
     result = check_files(files, project_root, rules)
     _print_violations(result.violations)

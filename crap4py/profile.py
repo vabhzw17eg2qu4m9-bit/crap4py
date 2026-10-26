@@ -40,7 +40,7 @@ _COPY_IGNORE = shutil.ignore_patterns(
     "*.egg-info",
     ".ruff_cache",
     ".pytest_cache",
-    "profile-reports",
+    _REPORTS_DIR,
     ".crap_profile_temp",
 )
 

@@ -34,6 +34,7 @@ crap4py unused-code [path]   Check for unused private module declarations.
 crap4py unused-files [path]  Check for source files never imported.
 crap4py banned-imports [..]  Enforce --from/--forbid import boundaries.
 crap4py magic-constants [..] Flag hex colors outside constants and repeated literals.
+crap4py scattered-constants  Flag literals repeated across 3+ distinct files.
 crap4py test-assertions [..] Flag test bodies without assertion calls.
 crap4py duplicates [opts] [p..] Flag duplicated lines (percentage) or clone groups (clones).
 crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operator.
@@ -52,7 +53,7 @@ Unknown flags → usage error (exit 1).
 
 Subcommands (`profile`, `skill`, `file-naming`, `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
+`banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`,
 `duplicates`, `mutation`, `similarity`, `memory`, `tuple-signatures`) are
 recognized only as the **first** argument; anything else (flags, paths) is
 analyzed as above. Each subcommand parses its own options; unknown subcommand
@@ -181,7 +182,7 @@ Exit `2` when `max(numeric CRAP) > threshold`, with
 |------|------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or empty selection).             |
 | `1`  | Usage error: bad flags, `--changed` + paths, unreadable source. |
-| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §21–§22, §24–§26, §29). |
+| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §21–§22, §24–§26, §29, §30). |
 
 ## 11. `--run-tests`
 
@@ -917,7 +918,7 @@ defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
 
 The command is informational and ALWAYS exits 0 — the exploration tool for
 tuning thresholds; usage/flag errors exit 1. There is no config file and
-no `check` pipeline (§30), so upstream's gate config maps to the
+no `check` pipeline (§31), so upstream's gate config maps to the
 strictly validated kebab-case flags: `--jaccard`/`--containment` outside
 0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
 are usage errors. Opt-in by nature: nothing in the default analyze path
@@ -1090,7 +1091,96 @@ Output: `<file>:<line>: inline tuple type 'tuple[int, int]' in signature —
 declare the shape as a NamedTuple/dataclass and reference it by name` plus
 a summary. Exit `2` iff findings.
 
-## 30. Non-goals
+## 30. `scattered-constants`
+
+```
+crap4py scattered-constants [paths...] [--min-files N] [--min-length N] [--min-value N]
+```
+
+Flags literals repeated across files — port of the crap4dart
+`scattered_constants` gate (e766d68), the corpus-wide sibling of
+`magic-constants` (§19). Two finding kinds:
+
+- **Constant regression** — a named constant for the value already exists
+  somewhere in the corpus: a module- or class-level ALL_CAPS assignment
+  (§19's const convention, `Assign` or `AnnAssign`) whose initializer is a
+  plain string/int/float literal; first declaration wins on shared values.
+  Every hardcoded re-introduction — a bare literal anywhere, or a duplicate
+  ALL_CAPS declaration in another file — flags IMMEDIATELY, at any
+  occurrence count, even a single one: `hardcoded <value> duplicates
+  constant \`NAME\` (<file>:<line>) — reference the constant instead of
+  repeating the literal`. You do not get to regrow the scatter while the
+  gate is silent. The winning declaring site itself never flags (its site
+  carries the const-declaration mark and is exempt only at the winning
+  file:line); duplicate declarations do flag.
+- **Scattered literal** — no constant exists yet and the value reached
+  `--min-files` (default 3) distinct files. The in-file gate counts repeats
+  inside one file; this path counts **distinct files per literal value**
+  and flags ONE finding per occurrence (file + line) — the "change `86400`
+  in every service" hazard that a once-per-file literal hides from every
+  other gate. Multiple occurrences in one file each add a finding but
+  count as ONE file; the message carries the scope (`in N files
+  (M occurrences)`) and the extract-and-verify fix shape.
+
+Values compare semantically: numbers key on their typed value, so digit
+separators and alternate radixes are one fact (`1_000` == `1000` ==
+`0x3E8`), while ints and floats stay distinct (`1000` ≠ `1000.0`); strings
+key on value. Strings render quoted and truncated at 40 chars in findings.
+The summary splits the kinds (`N hardcoded re-use(s) of existing
+constants, M scattered-literal occurrence(s) in F files`). Exit `2` iff
+violations.
+
+False-positive controls (upstream defaults; `magic-constants` shares the
+identifier rules via the same helpers):
+
+- strings shorter than `--min-length` (default 4) and numbers of magnitude
+  at or below `--min-value` (default 100) are coincidence;
+- dict keys, index subscripts and match-case literal patterns are protocol
+  identifiers, not constants;
+- the winning constant declaration is the blessed form and exempt; a
+  computed ALL_CAPS initializer (`PALETTE = mix(...)`, container literals)
+  registers no constant and its nested literals stay ordinary sites
+  (upstream parity);
+- `bool`/`None` and f-strings are never counted (also never registered);
+  f-strings are `JoinedStr` nodes and their static text parts are skipped
+  with the same id-set mechanism as the identifier positions;
+- import specifiers are structural references (upstream skips
+  import/export/part URIs) and are not string literals in Python — nothing
+  to skip;
+- test files are excluded by default (the normal §4-style selection);
+  Python has no generated-code glob convention and build/dist/venv trees
+  are already excluded by the source finder (upstream defaults:
+  generated-code globs + `test/**`).
+
+Adaptation notes:
+
+- **Registry scope** — upstream collects Dart `const` VariableDeclarations
+  (top-level/static/instance); Python's const convention is the ALL_CAPS
+  assignment, so the registry collects module- and class-level ALL_CAPS
+  `Assign`/`AnnAssign` with plain literal initializers — the same
+  statement shapes `magic-constants` §19 exempts.
+- **Docstrings are string literals** — Python docstrings are
+  expression-statement constants; upstream's Dart doc comments are
+  comments, invisible to its gate. Doc-text repeats (e.g. shared docstring
+  phrasing across gate modules) therefore surface as findings; renaming
+  docstrings per file is the accepted remainder, not extraction targets.
+- **No `ignore` option** — upstream's value/path-glob ignore list needs
+  the config system; the ports' flag surface has no config keys (§31).
+  Generic vocabulary ('utf-8', test-framework names, argparse metavar
+  words) is accepted remainder.
+- **Dogfood** — the gate's first run on crap4py itself found 182
+  findings. Extracted: the empty-selection message `'No Python files to
+  check.'` (9 gate modules) to `crap4py/constants.py`
+  (`NO_FILES_MESSAGE`); under the regression rule, `'coverage.json'`
+  (`DEFAULT_COVERAGE`: cli, mutation, runtests), `'console'`
+  (`DEFAULT_FORMAT`: memory, similarity) and `'percentage'`
+  (`DEFAULT_REPORT`: duplicates) moved to the same shared module, with
+  each module's `*_CHOICES` tuple composed from the constant. Zero
+  regressions remain. The accepted remainder (scattered class) is the
+  accepted classes above (argparse boilerplate, protocol words,
+  docstrings, encoding/glob vocabulary).
+
+## 31. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
