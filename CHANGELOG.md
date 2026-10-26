@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.20.0...v0.20.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **magic-constants:** skip f-string static parts as literal sites ([#54](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/54)) ([17701fa](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/17701faff4137b19b7b5f55856624a1a4a13e504))
+
 ## [0.20.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.19.0...v0.20.0) (2026-10-26)
 
 
