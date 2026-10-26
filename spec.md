@@ -525,12 +525,40 @@ variant passes.
 
 ```
 crap4py folder-structure [--dir DIR]... [--max N]
+                         [--cap PATTERN=N]... [--exclude GLOB]...
 ```
 
-Flags directories containing more than `--max` (default 0) `.py` files
-**directly** (non-recursive) — a flat-file sprawl that should be
-organized into feature subpackages. Port of the crap4dart 0.7.x
-`folder_structure` gate.
+Flags directories containing more than their cap of logical `.py` units
+**directly** — a flat-file sprawl that should be organized into feature
+subpackages. Port of the crap4dart 0.7.x `folder_structure` gate
+(per-pattern caps, glob dirs and stem collapse adapted from upstream
+753c3580). Two configuration forms:
+
+- **Classic** (default package roots, `--max` 0): every `--dir` entry —
+  a literal path or a glob pattern (`pkg/*`, `packages/**`, pathlib
+  `Path.glob` semantics: `*` stays within one path segment, `**`
+  recurses and includes the base directory itself) expanding to every
+  matching directory — shares one cap.
+- **`--cap PATTERN=N`** (repeatable): each pattern's directories get
+  their own cap — `--cap 'pkg/core=3' --cap 'pkg/**=30'` — a registry
+  folder may hold more than a hot core directory. When any `--cap` is
+  present it takes precedence and `--dir`/`--max` are not consulted. A
+  directory matched by several patterns uses the **first** pattern's
+  cap (flag order).
+
+Counting rules: only a directory's OWN contents count — files in
+subdirectories are the organized form and never reach the parent's
+budget. Generated siblings of one source file collapse into a single
+logical unit — `foo.py`, `foo_pb2.py` and `foo_pb2_grpc.py` share the
+stem `foo` and count once (host-generic py generated set: the
+protobuf `_pb2`/`_pb2_grpc` suffixes; Dart's `.g.dart`/`.freezed.dart`
+analog). `.pyi` stubs are package metadata and never counted as loose
+files (so a `.pyi` beside its `.py` collapses by omission). Files
+matching `--exclude` (fnmatch on the project-relative path, repeatable)
+don't count. Glob expansion never enumerates hidden or build
+directories: dot-prefixed names (`.git`, `.venv`, `.mypy_cache`, ...),
+`__pycache__`, `build`, `dist`, `venv`, `node_modules` and `*.egg-info`
+are skipped.
 
 Default dirs are the Python analog of Dart's `lib` — the importable
 package roots: direct children of the package root (`src/` when present,
@@ -542,7 +570,11 @@ directories are skipped.
 Output: `<dir>: N loose .py files directly in <dir> — group them into
 feature packages (max M)` plus a summary (`K directories organized into
 packages` / `V directory(ies) with loose-file sprawl`). Exit `2` iff
-violations, `1` on usage errors.
+violations, `1` on usage errors (malformed `--cap` values included).
+
+Dogfooding: the gate's own repo passes with `--cap 'crap4py=40'` —
+`crap4py/` holds 33 logical units today (35 `.py` files minus the two
+dunder plumbing files; no generated siblings yet).
 
 ## 23. `skill`
 
