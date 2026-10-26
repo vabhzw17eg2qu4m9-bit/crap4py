@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .args import UsageErrorParser
+from .constants import DEFAULT_FORMAT
 
 SHINGLE_SIZE = 8
 DEFAULT_MIN_SHINGLES = 50
@@ -56,8 +57,7 @@ DEFAULT_EXCLUDE: tuple[str, ...] = (
     "coverage/**",
     "node_modules/**",
 )
-FORMAT_CHOICES = ("console", "json")
-DEFAULT_FORMAT = "console"
+FORMAT_CHOICES = (DEFAULT_FORMAT, "json")
 
 MARKDOWN = "markdown"
 CODE = "code"

@@ -52,6 +52,7 @@ from typing import NamedTuple
 from . import __version__
 from .args import UsageErrorParser
 from .complexity import extract_methods
+from .constants import DEFAULT_COVERAGE
 from .coverage import FileCoverage, parse_coverage_dict
 from .files import PathLike, expand_paths, find_source_files, parse_file
 
@@ -1513,8 +1514,8 @@ def _build_parser() -> UsageErrorParser:
     parser.add_argument("--help", action="help", help="show this help message and exit")
     parser.add_argument(
         "--coverage",
-        default="coverage.json",
-        help="coverage.py JSON report, relative to the project root (default: coverage.json)",
+        default=DEFAULT_COVERAGE,
+        help=f"coverage.py JSON report, relative to the project root (default: {DEFAULT_COVERAGE})",
     )
     parser.add_argument(
         "--min-score",
