@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.20.1...v0.21.0) (2026-10-26)
+
+
+### Features
+
+* **gate:** folder-structure per-pattern caps, glob dirs, stem collapse ([#56](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/56)) ([8d7f8cf](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/8d7f8cf9070b24d00c2aa923ed67d2d61409e659))
+
 ## [0.20.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.20.0...v0.20.1) (2026-10-26)
 
 
