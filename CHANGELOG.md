@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.19.0...v0.20.0) (2026-10-26)
+
+
+### Features
+
+* **gate:** scattered-constants gate ([#52](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/52)) ([486a65d](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/486a65d5253e3cc70cc075b9e8e0353bf5694c03))
+
 ## [0.19.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.18.0...v0.19.0) (2026-10-23)
 
 
