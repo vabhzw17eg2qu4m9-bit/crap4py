@@ -45,7 +45,12 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
-from .magic_constants import MIN_LENGTH, _identifier_key_ids, _is_const_statement
+from .magic_constants import (
+    MIN_LENGTH,
+    _fstring_part_ids,
+    _identifier_key_ids,
+    _is_const_statement,
+)
 
 MIN_FILES = 3
 MIN_VALUE = 100
@@ -136,22 +141,6 @@ def _scan_file(
         key = _site_key(node.value, min_length, min_value)
         if key is not None:
             sites.setdefault(key, []).append((relative, node.lineno, id(node) in const_ids))
-
-
-def _fstring_part_ids(tree: ast.Module) -> set[int]:
-    """``id()``s of Constant nodes that are static parts of f-strings.
-
-    An f-string is a ``JoinedStr``: its value is dynamic (interpolation)
-    and its static text is formatting glue, not a constant — the whole
-    f-string is skipped, static parts included.
-    """
-    return {
-        id(part)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.JoinedStr)
-        for part in node.values
-        if isinstance(part, ast.Constant)
-    }
 
 
 def _register_constants(
