@@ -149,13 +149,16 @@ def _literals(tree: ast.Module, source: str) -> tuple[list[int], dict[str, list[
 
     Adjacent string literals arrive merged as one ``Constant`` (upstream's
     adjacent-strings handling). f-strings (``JoinedStr``) are skipped —
-    interpolation makes their value dynamic, not a constant. Strings in
-    identifier positions (dict keys, index expressions, match-case patterns)
-    are skipped — they name protocol fields, not constants.
+    interpolation makes their value dynamic, not a constant — including
+    their static text parts, which are plain ``Constant`` children the walk
+    would otherwise collect. Literals inside interpolation expressions still
+    count (upstream parity). Strings in identifier positions (dict keys,
+    index expressions, match-case patterns) are skipped — they name protocol
+    fields, not constants.
     """
     hexes: list[int] = []
     counts: dict[str, list[int]] = {}
-    identifier_keys = _identifier_key_ids(tree)
+    identifier_keys = _identifier_key_ids(tree) | _fstring_part_ids(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and id(node) not in identifier_keys:
             _record(node, source, hexes, counts)
@@ -168,6 +171,23 @@ def _identifier_key_ids(tree: ast.Module) -> set[int]:
     for node in ast.walk(tree):
         ids |= _node_key_ids(node)
     return ids
+
+
+def _fstring_part_ids(tree: ast.Module) -> set[int]:
+    """``id()``s of Constant nodes that are static parts of f-strings.
+
+    An f-string is a ``JoinedStr``: its value is dynamic (interpolation)
+    and its static text is formatting glue, not a constant — the whole
+    f-string is skipped, static parts included. Constants inside the
+    interpolation expressions are not parts and still count.
+    """
+    return {
+        id(part)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.JoinedStr)
+        for part in node.values
+        if isinstance(part, ast.Constant)
+    }
 
 
 def _node_key_ids(node: ast.AST) -> set[int]:
