@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.24.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.23.0...v0.24.0) (2026-10-27)
+
+
+### Features
+
+* **cli:** reorder command — deterministic canonical member ordering (adapted from upstream 24a6f24f) ([#62](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/62)) ([c7b3efb](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/c7b3efbf72e67cd4a87f8f4e82f7f529fba50e27))
+
+
+### Documentation
+
+* README command section, spec 32 (non-goals renumbered to 33). ([c7b3efb](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/c7b3efbf72e67cd4a87f8f4e82f7f529fba50e27))
+
 ## [0.23.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.22.0...v0.23.0) (2026-10-27)
 
 
