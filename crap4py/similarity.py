@@ -366,6 +366,11 @@ class _UnionFind:
     def add(self, item: str) -> None:
         self._parent[item] = item
 
+    def union(self, a: str, b: str) -> None:
+        root_a, root_b = self._find(a), self._find(b)
+        if root_a != root_b:
+            self._parent[root_b] = root_a
+
     def _find(self, item: str) -> str:
         root = item
         while self._parent[root] != root:
@@ -373,11 +378,6 @@ class _UnionFind:
         while self._parent[item] != root:
             self._parent[item], item = root, self._parent[item]
         return root
-
-    def union(self, a: str, b: str) -> None:
-        root_a, root_b = self._find(a), self._find(b)
-        if root_a != root_b:
-            self._parent[root_b] = root_a
 
 
 def analyze(

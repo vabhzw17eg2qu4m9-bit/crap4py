@@ -75,6 +75,7 @@ crap4py mutation             # mutation testing: re-run tests per mutated operat
 crap4py similarity           # scan for near-duplicate files (console/json)
 crap4py memory               # per-test alloc churn + GC attribution (informational)
 crap4py tuple-signatures     # flag inline tuple annotations in function signatures
+crap4py reorder              # rewrite class bodies into canonical member order
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -372,7 +373,8 @@ _v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, thi
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
 line- or file-scoped can address them), `similarity`/`memory`
-(informational, always exit 0), `profile`/`skill` (not gates).
+(informational, always exit 0), `profile`/`skill`/`reorder` (not gates —
+`reorder` is a deterministic source transform).
 
 ## `crap4py similarity`
 
@@ -503,13 +505,56 @@ Max CRAP: 30.0 (threshold 8.0) — FAILED
 
 Sorted by CRAP descending; `N/A` entries last.
 
+## `crap4py reorder`
+
+```bash
+crap4py reorder [paths...] [--dry-run/-n]
+```
+
+Rewrites class bodies so members follow the canonical order — a
+deterministic source transform, not a gate (port of crap4dart 24a6f24f,
+`reorder` command). The stable partition never sorts alphabetically:
+same-kind members keep their source-relative order. The canonical table
+(host-idiomatic, porting upstream's constants/static fields/fields/
+constructors/static methods/accessors/public/private):
+
+1. class constants — `UPPER_SNAKE_CASE` assignments (annotated or not)
+2. class attributes — every other assignment/annotation in the body
+3. constructors — `__init__`, `__new__`
+4. other dunders — `__repr__`, `__eq__`, `__len__`, ...
+5. static/class methods — `@staticmethod` / `@classmethod`
+6. properties — `@property` / `@x.setter` / `@x.deleter`
+7. public methods
+8. private methods — `_name`
+
+A leading docstring stays first. `#` comment lines directly above a member
+and its decorators move with it; a comment block separated from its member
+by ONE blank line still attaches, TWO blank lines detach — a detached block
+rides with the preceding member, so comments are never dropped (upstream
+drops them). Whole-line slices only: every member keeps its exact source
+text, and the file's line-ending style (LF/CRLF) and trailing-newline state
+are preserved.
+
+Never touched: `enum.Enum`-family subclasses (value order is semantics),
+bodies containing anything but members (`if`/`try`/nested class/bare
+expressions — their order may be semantic), members sharing a source line
+(`class A: x = 1` one-liners, semicolon lists — no safe slice points).
+
+Deterministic: same input, same output; already-canonical bodies are left
+byte-identical whatever their layout; `fix(fix(x)) == fix(x)`. With
+`--dry-run` nothing is written, files that would change are listed, and the
+command exits `2` (CI/pre-commit form); without it, files are written and it
+exits `0`. Parse errors are skipped with a note, never fatal. The default
+selection is the normal file selection (§4 of the spec); explicit paths may
+be files or directories.
+
 ## Exit codes
 
 | Code | Meaning                                                                |
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 
@@ -575,6 +620,7 @@ crap4py/
     test_assertions.py    `test-assertions` gate subcommand (assertion-free tests)
     folder_structure.py   `folder-structure` gate subcommand (loose-file sprawl)
     tuple_signatures.py   `tuple-signatures` gate subcommand (inline tuple shapes)
+    reorder.py            `reorder` subcommand (canonical member ordering transform)
     mutation.py           `mutation` gate subcommand (per-mutant test re-runs)
     imports.py            import → project-file resolution (shared by the gates)
     skill.py              `skill` subcommand

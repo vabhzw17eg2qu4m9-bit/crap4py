@@ -182,7 +182,7 @@ Exit `2` when `max(numeric CRAP) > threshold`, with
 |------|------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or empty selection).             |
 | `1`  | Usage error: bad flags, `--changed` + paths, unreadable source. |
-| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §21–§22, §24–§26, §29, §30). |
+| `2`  | CRAP threshold exceeded; profile `--threshold` exceeded; gate-subcommand violations (§12–§19, §21–§22, §24–§26, §29, §30); `reorder --dry-run` when any file would change (§32). |
 
 ## 11. `--run-tests`
 
@@ -1313,7 +1313,45 @@ line — a marker inside a string literal on a violating line suppresses
 too (upstream has the same property); gate ids keep upstream's
 snake_case, mapped from the kebab-case subcommands.
 
-## 32. Non-goals
+## 32. `reorder`
+
+```
+crap4py reorder [paths...] [--dry-run/-n]
+```
+
+The `reorder` command shall rewrite each listed Python file (default: the
+normal §4 selection) so that class-body members appear in the canonical
+order: class constants (`UPPER_SNAKE_CASE` assignments, annotated or not),
+class attributes (every other assignment/annotation), constructors
+(`__init__`, `__new__`), other dunder methods, static/class methods
+(`@staticmethod` / `@classmethod`), properties (`@property` /
+`@x.setter` / `@x.deleter`), public methods, private methods (`_name`).
+Members within one category shall keep their original relative order (a
+stable partition — the command never sorts alphabetically). A leading
+docstring stays first. Whole-line `#` comment blocks above a member and its
+decorators shall move with it — including a block separated from the member
+by a single blank line; two or more blank lines detach the block, and a
+detached block shall ride with the preceding member (no comment is ever
+dropped). Enum-family subclasses (`Enum`, `IntEnum`, `StrEnum`, `Flag`,
+`IntFlag`, dotted or bare) shall never be reordered (value order is
+semantics), nor shall bodies containing anything but member statements
+(`if`/`try`/nested class/bare expressions) or members sharing a source line
+(`class A: x = 1` one-liners, semicolon lists). A file's line-ending style
+(LF or CRLF) and its trailing-newline state shall be preserved.
+
+The transform shall be deterministic and idempotent: the same input shall
+produce the same output, already-canonical bodies shall be left
+byte-identical (whatever their member layout), and reordering an
+already-reordered file shall not change it. Nested classes: the innermost
+reorderable class bodies are fixed first and the enclosing bodies on the
+next fixpoint pass (a nested class in a body marks it not reorderable;
+method-local classes are fixed inside the moving member text). With
+`--dry-run` the command shall write nothing, list the files that would
+change, and exit `2` when at least one would (0 otherwise); without it,
+files are written and the command exits `0`. Files that fail to parse shall
+be skipped with a note and shall not fail the run.
+
+## 33. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
