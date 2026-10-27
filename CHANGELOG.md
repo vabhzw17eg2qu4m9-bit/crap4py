@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.21.0...v0.22.0) (2026-10-27)
+
+
+### Features
+
+* **gate:** scattered-constants corpus guards + aliases rule + dogfood dedup (adapted from upstream a314b485) ([#58](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/58)) ([43f6169](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/43f6169d8bc62fc3702a6c9b657f834aa3c20b58))
+
 ## [0.21.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.20.1...v0.21.0) (2026-10-26)
 
 
