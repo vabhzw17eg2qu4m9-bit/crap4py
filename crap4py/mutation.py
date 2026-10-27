@@ -173,7 +173,9 @@ class MutationCacheMeta:
     """
 
     tool: str
+
     operators: str
+
     test_args: str
 
     @classmethod
@@ -184,9 +186,6 @@ class MutationCacheMeta:
             test_args=",".join(test_args),
         )
 
-    def to_dict(self) -> dict:
-        return {"tool": self.tool, "operators": self.operators, "test_args": self.test_args}
-
     @classmethod
     def from_dict(cls, data: dict) -> MutationCacheMeta:
         return cls(
@@ -195,17 +194,37 @@ class MutationCacheMeta:
             test_args=data.get("test_args") or "",
         )
 
+    def to_dict(self) -> dict:
+        return {"tool": self.tool, "operators": self.operators, "test_args": self.test_args}
+
 
 @dataclass(frozen=True, slots=True)
 class CachedOutcome:
     """One cached per-site outcome; ``offset`` is relative to the method start."""
 
     offset: int
+
     line: int
+
     category: str
+
     original: str
+
     mutant: str
+
     status: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CachedOutcome:
+        # Malformed fields fall back to values that can never replay (offset -1).
+        return cls(
+            offset=data.get("offset", -1),
+            line=data.get("line", 0),
+            category=data.get("category", ""),
+            original=data.get("original", ""),
+            mutant=data.get("mutant", ""),
+            status=data.get("status", ""),
+        )
 
     def matches(self, offset: int, category: str, original: str, mutant: str) -> bool:
         """Whether this outcome sits at the given site (same span and replacement)."""
@@ -225,18 +244,6 @@ class CachedOutcome:
             "mutant": self.mutant,
             "status": self.status,
         }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> CachedOutcome:
-        # Malformed fields fall back to values that can never replay (offset -1).
-        return cls(
-            offset=data.get("offset", -1),
-            line=data.get("line", 0),
-            category=data.get("category", ""),
-            original=data.get("original", ""),
-            mutant=data.get("mutant", ""),
-            status=data.get("status", ""),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +271,24 @@ class MutationCache:
     def methods_key(rel_path: str, method_name: str) -> str:
         """Stable cache key: relative file path plus the qualified method name."""
         return f"{rel_path}#{method_name}"
+
+    @classmethod
+    def load(cls, path: Path, meta: MutationCacheMeta) -> MutationCache:
+        """Load the cache at ``path`` under ``meta``.
+
+        A missing, corrupt, outdated or meta-mismatched file yields an
+        empty cache — a full re-execution under the current semantics.
+        """
+        try:
+            decoded = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return cls(meta)
+        if not isinstance(decoded, dict) or decoded.get("version") != MUTATION_CACHE_VERSION:
+            return cls(meta)
+        stored = MutationCacheMeta.from_dict(decoded.get("meta") or {})
+        if stored != meta:
+            return cls(meta)
+        return cls(meta, _read_methods(decoded.get("methods")))
 
     def replay_kill(self, ref: MethodRef, site: MutationSite) -> CachedOutcome | None:
         """The cached killed outcome matching ``site``, or ``None`` (must execute).
@@ -307,24 +332,6 @@ class MutationCache:
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps(self.to_dict(), indent=2))
-
-    @classmethod
-    def load(cls, path: Path, meta: MutationCacheMeta) -> MutationCache:
-        """Load the cache at ``path`` under ``meta``.
-
-        A missing, corrupt, outdated or meta-mismatched file yields an
-        empty cache — a full re-execution under the current semantics.
-        """
-        try:
-            decoded = json.loads(path.read_text())
-        except (OSError, ValueError):
-            return cls(meta)
-        if not isinstance(decoded, dict) or decoded.get("version") != MUTATION_CACHE_VERSION:
-            return cls(meta)
-        stored = MutationCacheMeta.from_dict(decoded.get("meta") or {})
-        if stored != meta:
-            return cls(meta)
-        return cls(meta, _read_methods(decoded.get("methods")))
 
 
 def _read_methods(raw: object) -> dict[str, CachedMethod]:
@@ -406,19 +413,26 @@ class MutationSite:
     """
 
     file: str
-    line: int
-    method: str | None
-    category: str
-    original: str
-    mutant: str
-    start: int
-    end: int
 
-    def apply_to(self, content: str) -> str:
-        return content[: self.start] + self.mutant + content[self.end :]
+    line: int
+
+    method: str | None
+
+    category: str
+
+    original: str
+
+    mutant: str
+
+    start: int
+
+    end: int
 
     def __str__(self) -> str:
         return f"{self.file}:{self.line}: {self.original} -> {self.mutant} ({self.category})"
+
+    def apply_to(self, content: str) -> str:
+        return content[: self.start] + self.mutant + content[self.end :]
 
 
 @dataclass(frozen=True, slots=True)

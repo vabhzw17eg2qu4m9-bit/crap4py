@@ -37,6 +37,7 @@ _SUBCOMMANDS = (
     "similarity",
     "memory",
     "tuple-signatures",
+    "reorder",
 )
 
 _USAGE = """\
@@ -61,6 +62,7 @@ Usage:
   crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
   crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
   crap4py tuple-signatures [p.] Flag inline tuple annotations in function signatures.
+  crap4py reorder [-n] [p..]   Rewrite class bodies into canonical member order.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -172,6 +174,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         mutation,
         nesting,
         profile,
+        reorder,
         scattered_constants,
         similarity,
         skill,
@@ -202,5 +205,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "similarity": similarity.run,
         "memory": memory.run,
         "tuple-signatures": tuple_signatures.run,
+        "reorder": reorder.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
