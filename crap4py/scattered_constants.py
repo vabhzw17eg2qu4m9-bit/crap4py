@@ -15,6 +15,17 @@ sibling of ``magic-constants``. Two finding kinds:
   (file + line): the "change 86400 in every service" hazard that in-file
   repeat counting cannot see — a literal used once per file in N files
   never trips the in-file gate.
+- **Pure value alias** — a private ALL_CAPS assignment whose initializer is
+  another name outright (``_APP = BRAND``): a second spelling of a fact
+  that already has a home. Flags with ``alias `_X` adds no information —
+  reference `Y` directly``. Public aliases are exempt (re-export shims are
+  a deliberate API shape) and computed initializers are not aliases;
+  ``--no-aliases`` switches the rule off.
+
+The constant registry honors the same coincidence doctrine as the site
+scan: numbers of magnitude at or below ``--min-value`` (exit codes 0/1/2,
+pixel codes, cache versions) never seed the corpus, so small facts cannot
+collide in the regression rule.
 
 Values compare semantically: digit separators do not split a fact, so
 ``1_000``, ``1000`` and ``0x3E8`` are one value (canonical int value keys,
@@ -36,6 +47,7 @@ False-positive controls (upstream defaults):
 
 from __future__ import annotations
 
+import argparse
 import ast
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -63,6 +75,8 @@ _Shared = tuple[str, str, int]
 # One occurrence site: file, 1-based line, and whether the site is itself a
 # constant-declaration initializer (the winning declaration never flags).
 _Site = tuple[str, int, bool]
+# A pure value alias: private name, referenced name, file, 1-based line.
+_Alias = tuple[str, str, str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +105,9 @@ def run(argv: list[str], project_root: Path) -> int:
     if not files:
         print(NO_FILES_MESSAGE)
         return 0
-    result = check_files(files, project_root, args.min_files, args.min_length, args.min_value)
+    result = check_files(
+        files, project_root, args.min_files, args.min_length, args.min_value, args.aliases
+    )
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(summary(result))
@@ -104,11 +120,13 @@ def check_files(
     min_files: int = MIN_FILES,
     min_length: int = MIN_LENGTH,
     min_value: int = MIN_VALUE,
+    flag_aliases: bool = True,
 ) -> ScatteredConstantsResult:
     """Flag constant regressions everywhere and literals scattered over ``min_files`` files."""
     root = Path(project_root)
     sites: dict[tuple, list[_Site]] = {}
     constants: dict[tuple, _Shared] = {}
+    aliases: list[_Alias] = []
     checked = 0
     for path in files:
         p = Path(path)
@@ -118,8 +136,13 @@ def check_files(
         if tree is None:
             continue
         checked += 1
-        _scan_file(tree, _relative_to_root(p, root), min_length, min_value, sites, constants)
-    return ScatteredConstantsResult(_violations(sites, constants, min_files), checked)
+        _scan_file(
+            tree, _relative_to_root(p, root), min_length, min_value, sites, constants, aliases
+        )
+    violations = _violations(sites, constants, min_files)
+    violations += _alias_violations(aliases, flag_aliases)
+    violations.sort(key=lambda v: (v.file, v.line))
+    return ScatteredConstantsResult(violations, checked)
 
 
 def _scan_file(
@@ -129,9 +152,10 @@ def _scan_file(
     min_value: int,
     sites: dict[tuple, list[_Site]],
     constants: dict[tuple, _Shared],
+    aliases: list[_Alias],
 ) -> None:
     """Register the module's constants, then add its literal sites."""
-    const_ids = _register_constants(tree, relative, constants)
+    const_ids = _register_constants(tree, relative, constants, aliases, min_value)
     identifiers = _identifier_key_ids(tree) | _fstring_part_ids(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or isinstance(node.value, (bool, type(None))):
@@ -144,22 +168,59 @@ def _scan_file(
 
 
 def _register_constants(
-    tree: ast.Module, relative: str, constants: dict[tuple, _Shared]
+    tree: ast.Module,
+    relative: str,
+    constants: dict[tuple, _Shared],
+    aliases: list[_Alias],
+    min_value: int,
 ) -> set[int]:
     """First-wins registry of ALL_CAPS constants with plain literal values.
 
     Returns the ``id()``s of the registered value nodes — their own sites
-    are constant declarations, which never flag as regressions.
+    are constant declarations, which never flag as regressions. Values the
+    site scan treats as coincidence (magnitude at or below ``min_value``)
+    never seed the corpus either — an ignored value cannot be the canonical
+    twin that flags someone else.
     """
     const_ids: set[int] = set()
     for stmt in _const_statements(tree):
         value = stmt.value
+        if isinstance(value, ast.Name):
+            aliases.append((_const_name(stmt), value.id, relative, value.lineno))
+            continue
         key = _literal_key(value.value) if isinstance(value, ast.Constant) else None
-        if key is None:
+        if key is None or _coincidence(value.value, min_value):
             continue
         const_ids.add(id(value))
         constants.setdefault(key, (_const_name(stmt), relative, value.lineno))
     return const_ids
+
+
+def _coincidence(value, min_value: int) -> bool:
+    """Whether a constant value is coincidence by the site-side doctrine.
+
+    Numbers of magnitude at or below ``min_value`` (exit codes, pixel codes,
+    cache versions) happen everywhere; bool/None never reach here (they have
+    no registry key).
+    """
+    return isinstance(value, (int, float)) and abs(value) <= min_value
+
+
+def _alias_violations(aliases: list[_Alias], flag_aliases: bool) -> list[ScatteredConstant]:
+    """Pure value aliases: a private alias adds a name without information.
+
+    Public aliases are exempt — re-export shims are a deliberate API shape;
+    computed initializers were never collected as aliases.
+    """
+    if not flag_aliases:
+        return []
+    return [
+        ScatteredConstant(
+            file, line, f"alias `{name}` adds no information — reference `{target}` directly"
+        )
+        for name, target, file, line in aliases
+        if name.startswith("_")
+    ]
 
 
 def _const_statements(tree: ast.Module):
@@ -272,12 +333,15 @@ def summary(result: ScatteredConstantsResult) -> str:
     if not result.violations:
         return f"{result.checked} files scanned, no literals repeat across files"
     regressions = sum("duplicates constant" in v.message for v in result.violations)
-    scattered = len(result.violations) - regressions
+    aliases = sum("adds no information" in v.message for v in result.violations)
+    scattered = len(result.violations) - regressions - aliases
     parts = []
     if regressions:
         parts.append(f"{regressions} hardcoded re-use(s) of existing constants")
     if scattered:
         parts.append(f"{scattered} scattered-literal occurrence(s)")
+    if aliases:
+        parts.append(f"{aliases} pure alias(es)")
     return f"{', '.join(parts)} in {result.checked} files"
 
 
@@ -308,5 +372,11 @@ def _build_parser() -> UsageErrorParser:
         type=int,
         default=MIN_VALUE,
         help=f"ignore numbers of magnitude at or below this (default: {MIN_VALUE})",
+    )
+    parser.add_argument(
+        "--aliases",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="flag private pure value aliases (`_X = Y`; default: on)",
     )
     return parser

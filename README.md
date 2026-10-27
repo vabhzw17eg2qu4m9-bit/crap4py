@@ -167,7 +167,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py` re-exports count; `__init__.py`/`__main__.py` exempt). |
 | `banned-imports [--from GLOB --forbid GLOB [--message MSG]]... [paths...]` | a file matching `from` imports something matching `forbid` (raw dotted name or resolved project path). |
 | `magic-constants [paths...]` | a hex color literal (`0xRRGGBB`/`0xAARRGGBB`) appears outside an ALL_CAPS constant assignment, or a numeric/string literal (length ≥4) repeats ≥3 times in one file (dict keys, index strings and match-case patterns are skipped). |
-| `scattered-constants [--min-files N] [--min-length N] [--min-value N] [paths...]` | a value with an existing ALL_CAPS constant anywhere is re-introduced hardcoded — bare literal or duplicate declaration, any count, even once (`hardcoded <v> duplicates constant \`NAME\` (file:line)`); or a constant-less literal (string ≥N chars, default 4; number of magnitude >N, default 100) spans N distinct files (default 3) — one finding per occurrence (dict keys, index strings, match-case patterns skipped; `1_000` and `1000` are one value). |
+| `scattered-constants [--min-files N] [--min-length N] [--min-value N] [--aliases/--no-aliases] [paths...]` | a value with an existing ALL_CAPS constant anywhere is re-introduced hardcoded — bare literal or duplicate declaration, any count, even once (`hardcoded <v> duplicates constant \`NAME\` (file:line)`); or a constant-less literal (string ≥N chars, default 4; number of magnitude >N, default 100) spans N distinct files (default 3) — one finding per occurrence (dict keys, index strings, match-case patterns skipped; `1_000` and `1000` are one value); or a private ALL_CAPS name is an outright alias of another name (`_X = Y` → `alias \`_X\` adds no information`; public aliases exempt, `--no-aliases` off). |
 | `test-assertions [--min N] [paths...]` | a `test_*` function/method body has fewer than N (default 1) assertion signals — `assert` statements, `self.assert*`/`self.fail`, `pytest.raises`. |
 | `folder-structure [--dir DIR]... [--max N] [--cap PATTERN=N]... [--exclude GLOB]...` | a directory holds more than its cap of logical `.py` units directly (`__init__.py`/`__main__.py` not counted; `foo_pb2.py`/`foo_pb2_grpc.py` collapse into `foo`'s stem; subdirectories never reach the parent's budget). `--dir` entries may be glob patterns (`pkg/*`, `packages/**`); `--cap` (repeatable) gives each pattern its own cap and takes precedence over `--dir`/`--max` (first pattern wins); `--exclude` globs exempt files. |
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files] [--report percentage\|clones] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--report clones` switches to one violation per non-overlapping clone group (PMD CPD style). `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization, `--ignore-identifiers`/`--ignore-imports`/`--skip-duplicate-files` are the CPD-parity knobs (below). |
@@ -189,23 +189,33 @@ and the `.$N` positional-access kind is skipped — `t[0]` is ordinary
 sequence indexing, not a record fingerprint.
 
 `scattered-constants` is the corpus-wide sibling of `magic-constants`
-(port of crap4dart e766d68, `scattered_constants`), with two finding kinds.
-**Constant regression**: once a named constant for a value exists anywhere
-(module/class-level ALL_CAPS with a plain literal value, first declaration
-wins), every hardcoded re-introduction — bare literal or duplicate
-declaration in another file — flags immediately at any count, naming the
-constant and its `file:line` to reference; the winning declaration itself
-never flags. **Scattered literal**: with no constant yet, the gate counts
-DISTINCT files per literal value and flags every occurrence once the value
-spans `--min-files` files — the "change `86400` in every service" hazard
-that a once-per-file literal hides from every other gate. Values compare
-semantically (`1_000`, `1000` and `0x3E8` are one fact; ints and floats
-stay distinct). Adaptations: import specifiers are structural references
+(port of crap4dart e766d68 + a314b485, `scattered_constants`), with three
+finding kinds. **Constant regression**: once a named constant for a value
+exists anywhere (module/class-level ALL_CAPS with a plain literal value,
+first declaration wins), every hardcoded re-introduction — bare literal or
+duplicate declaration in another file — flags immediately at any count,
+naming the constant and its `file:line` to reference; the winning
+declaration itself never flags. The registry honors the site scan's
+coincidence doctrine: numbers of magnitude at or below `--min-value` (exit
+codes, pixel codes, cache versions) never seed the corpus, so small facts
+cannot collide in the regression rule. **Scattered literal**: with no
+constant yet, the gate counts DISTINCT files per literal value and flags
+every occurrence once the value spans `--min-files` files — the "change
+`86400` in every service" hazard that a once-per-file literal hides from
+every other gate. Values compare semantically (`1_000`, `1000` and `0x3E8`
+are one fact; ints and floats stay distinct). **Pure value alias**: a
+private ALL_CAPS name whose initializer is another name outright
+(`_APP = BRAND`) adds a spelling without information and flags
+(`alias \`_APP\` adds no information — reference \`BRAND\` directly`);
+public aliases are exempt (re-export shims are a deliberate API shape),
+computed initializers are not aliases, and `--no-aliases` switches the
+rule off. Adaptations: import specifiers are structural references
 (upstream skips import/export/part URIs) but are not string literals in
 Python, so nothing to skip; Python docstrings are string-literal
 statements, so doc-text repeats surface as findings (upstream's Dart doc
 comments are invisible to its gate); upstream's `ignore` option is not
-ported (flag-based surface, no config system). Test files and
+ported (flag-based surface, no config system — its `aliases` config key
+maps to the `--aliases/--no-aliases` flag). Test files and
 build/dist/venv trees are excluded by the default selection;
 identifier-position strings are exempt, per upstream semantics.
 

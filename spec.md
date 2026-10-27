@@ -1127,11 +1127,12 @@ a summary. Exit `2` iff findings.
 
 ```
 crap4py scattered-constants [paths...] [--min-files N] [--min-length N] [--min-value N]
+                            [--aliases/--no-aliases]
 ```
 
 Flags literals repeated across files — port of the crap4dart
-`scattered_constants` gate (e766d68), the corpus-wide sibling of
-`magic-constants` (§19). Two finding kinds:
+`scattered_constants` gate (e766d68 + a314b485), the corpus-wide sibling of
+`magic-constants` (§19). Three finding kinds:
 
 - **Constant regression** — a named constant for the value already exists
   somewhere in the corpus: a module- or class-level ALL_CAPS assignment
@@ -1144,7 +1145,14 @@ Flags literals repeated across files — port of the crap4dart
   repeating the literal`. You do not get to regrow the scatter while the
   gate is silent. The winning declaring site itself never flags (its site
   carries the const-declaration mark and is exempt only at the winning
-  file:line); duplicate declarations do flag.
+  file:line); duplicate declarations do flag. The registry honors the site
+  scan's coincidence doctrine (a314b485 gate fix 1): numbers of magnitude
+  at or below `--min-value` (exit codes 0/1/2, pixel codes, cache
+  versions) never seed the corpus — an ignored value cannot be the
+  canonical twin that flags someone else — and const-declaration
+  initializer hits go through the same `--min-value`/`--min-length` guards
+  as use-site literals (gate fix 2; this port's single-collection design
+  already routed every site through one guard, pinned by tests).
 - **Scattered literal** — no constant exists yet and the value reached
   `--min-files` (default 3) distinct files. The in-file gate counts repeats
   inside one file; this path counts **distinct files per literal value**
@@ -1153,14 +1161,24 @@ Flags literals repeated across files — port of the crap4dart
   other gate. Multiple occurrences in one file each add a finding but
   count as ONE file; the message carries the scope (`in N files
   (M occurrences)`) and the extract-and-verify fix shape.
+- **Pure value alias** (a314b485) — a module- or class-level ALL_CAPS
+  assignment whose initializer is another name outright (`_APP = BRAND`):
+  a second spelling of a fact that already has a home. Private aliases
+  flag: `alias \`_APP\` adds no information — reference \`BRAND\`
+  directly`. Public aliases are exempt (re-export shims are a deliberate
+  API shape); computed initializers (`_APP = BRAND + "!"`, `_APP = f(...)`)
+  are not aliases; `--no-aliases` switches the rule off. Alias collection
+  shares the const-statement pass with the registry — one pass, no second
+  walk; aliases enter the combined finding list and sort with everything
+  else by file and line.
 
 Values compare semantically: numbers key on their typed value, so digit
 separators and alternate radixes are one fact (`1_000` == `1000` ==
 `0x3E8`), while ints and floats stay distinct (`1000` ≠ `1000.0`); strings
 key on value. Strings render quoted and truncated at 40 chars in findings.
 The summary splits the kinds (`N hardcoded re-use(s) of existing
-constants, M scattered-literal occurrence(s) in F files`). Exit `2` iff
-violations.
+constants, M scattered-literal occurrence(s), K pure alias(es) in F
+files`). Exit `2` iff violations.
 
 False-positive controls (upstream defaults; `magic-constants` shares the
 identifier rules via the same helpers):
@@ -1199,7 +1217,10 @@ Adaptation notes:
 - **No `ignore` option** — upstream's value/path-glob ignore list needs
   the config system; the ports' flag surface has no config keys (§31).
   Generic vocabulary ('utf-8', test-framework names, argparse metavar
-  words) is accepted remainder.
+  words) is accepted remainder. Upstream's `aliases` config key (bool,
+  default true) maps to the `--aliases/--no-aliases` flag (default on);
+  upstream's strict unknown-key validation has no analog — a flag surface
+  rejects unknown flags outright (argparse exit 1).
 - **Dogfood** — the gate's first run on crap4py itself found 182
   findings. Extracted: the empty-selection message `'No Python files to
   check.'` (9 gate modules) to `crap4py/constants.py`
@@ -1211,6 +1232,18 @@ Adaptation notes:
   regressions remain. The accepted remainder (scattered class) is the
   accepted classes above (argparse boilerplate, protocol words,
   docstrings, encoding/glob vocabulary).
+- **Dogfood (a314b485 re-run)** — the upgraded gate on crap4py's own
+  source: 0 regressions, 0 pure aliases, 200 scattered-literal
+  occurrences in 35 files — identical to the 6f3cd94 baseline. The
+  e766d68 dogfood above had already given the shared vocabulary single
+  homes; the corpus minValue guard only removes inert small-int registry
+  entries (`MIN_FILES = 3`-shaped module knobs) that could never collide
+  (small-value sites are never collected), so no warning counts moved and
+  no new vocabulary homes were needed. The alias rule found nothing to
+  inline — crap4py has no `_X = Y` pure aliases (the e766d68 extraction
+  referenced `constants.py` directly, creating no aliases, per upstream's
+  own review lesson). No `magic-constants` interaction: the shared homes
+  are the same ALL_CAPS declarations that gate already exempts.
 
 ## 31. Non-goals
 

@@ -25,8 +25,20 @@ def _scan(*sources: str) -> tuple[dict, dict]:
     sites: dict = {}
     constants: dict = {}
     for i, source in enumerate(sources):
-        _scan_file(ast.parse(textwrap.dedent(source)), f"f{i}.py", 4, MIN_VALUE, sites, constants)
+        _scan_file(
+            ast.parse(textwrap.dedent(source)), f"f{i}.py", 4, MIN_VALUE, sites, constants, []
+        )
     return sites, constants
+
+
+def _aliases(*sources: str) -> list[tuple]:
+    """Scan the given sources and return the collected alias records."""
+    from crap4py.scattered_constants import _scan_file
+
+    aliases: list[tuple] = []
+    for i, source in enumerate(sources):
+        _scan_file(ast.parse(textwrap.dedent(source)), f"f{i}.py", 4, MIN_VALUE, {}, {}, aliases)
+    return aliases
 
 
 def _messages(*sources: str) -> list[str]:
@@ -150,7 +162,7 @@ class DistinctFileCountTest(unittest.TestCase):
         from crap4py.scattered_constants import _scan_file
 
         sites, constants = _scan('b = "brand"\na = "brand"\n')
-        _scan_file(ast.parse('c = "brand"\n'), "a.py", 4, MIN_VALUE, sites, constants)
+        _scan_file(ast.parse('c = "brand"\n'), "a.py", 4, MIN_VALUE, sites, constants, [])
         vs = _violations(sites, constants, 2)
         self.assertEqual([(v.file, v.line) for v in vs], [("a.py", 1), ("f0.py", 1), ("f0.py", 2)])
 
@@ -183,6 +195,99 @@ class SemanticValueTest(unittest.TestCase):
         joined = "\n".join(msgs)
         self.assertIn("literal 86400 repeats in 3 files (3 occurrences)", joined)
         self.assertIn("literal '86400' repeats in 3 files (3 occurrences)", joined)
+
+
+class CorpusGuardTest(unittest.TestCase):
+    """The constant registry honors the site scan's coincidence doctrine."""
+
+    def test_small_int_constants_never_seed_corpus(self):
+        # Killing test: the corpus minValue guard — small-int constants
+        # (exit codes 0/1/2) are coincidence and must not collide in the
+        # regression rule. Mutate the guard and the registry fills.
+        from crap4py.scattered_constants import _scan_file
+
+        constants: dict = {}
+        for i, value in enumerate((0, 1, 2)):
+            _scan_file(
+                ast.parse(f"EXIT_{i} = {value}\n"), f"f{i}.py", 4, MIN_VALUE, {}, constants, []
+            )
+        self.assertEqual(constants, {})
+
+    def test_small_int_constants_in_three_files_do_not_warn(self):
+        msgs = _messages("EXIT_OK = 0\n", "FAIL = 1\n", "RETRY = 2\n")
+        self.assertEqual(msgs, [])
+
+    def test_const_decl_initializer_under_min_value_not_flagged(self):
+        # Killing test: const-decl initializer hits go through the same
+        # minValue guard as use-site literals — 3 files declaring int 1
+        # is coincidence, not scatter.
+        self.assertEqual(_messages("A = 1\n", "B = 1\n", "C = 1\n"), [])
+
+    def test_const_decl_initializer_over_min_value_flags(self):
+        # Over the threshold a duplicate declaration is the scatter itself.
+        msgs = _messages("A = 86400\n", "B = 86400\n")
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("duplicates constant `A` (f0.py:1)", msgs[0])
+
+    def test_small_string_constant_still_seeds_corpus(self):
+        # The guard is numbers-only: strings key on value, min_length is
+        # the site-side length doctrine and the registry keeps short ones
+        # (a use-site can never collide with them, sites are length-guarded).
+        msgs = _messages("AB = 'ab'\n", "x = 'ab'\n")
+        self.assertEqual(msgs, [])
+
+
+class AliasTest(unittest.TestCase):
+    """The pure-alias rule: a private ALL_CAPS alias of another name flags."""
+
+    def test_private_alias_flags(self):
+        # Killing test: `_APP = BRAND` adds a name without information.
+        # Collection keeps every ALL_CAPS alias; the private filter bites
+        # at violation time.
+        aliases = _aliases("BRAND = 'brand'\n_APP = BRAND\n")
+        self.assertEqual(aliases, [("_APP", "BRAND", "f0.py", 2)])
+        from crap4py.scattered_constants import _alias_violations
+
+        vs = _alias_violations(aliases, True)
+        self.assertEqual([(v.file, v.line) for v in vs], [("f0.py", 2)])
+        self.assertEqual(
+            vs[0].message, "alias `_APP` adds no information — reference `BRAND` directly"
+        )
+
+    def test_public_alias_exempt(self):
+        # Re-export shims are a deliberate API shape: collected, never flagged.
+        aliases = _aliases("BRAND = 'brand'\nAPP = BRAND\n")
+        self.assertEqual(aliases, [("APP", "BRAND", "f0.py", 2)])
+        from crap4py.scattered_constants import _alias_violations
+
+        self.assertEqual(_alias_violations(aliases, True), [])
+
+    def test_computed_initializer_not_alias(self):
+        # A computed initializer adds information; only a bare Name is an alias.
+        self.assertEqual(_aliases("BRAND = 'brand'\nAPP = BRAND + '!'\n"), [])
+        self.assertEqual(_aliases("BRAND = 'brand'\nAPP = f(BRAND)\n"), [])
+
+    def test_flag_aliases_false_disables_rule(self):
+        aliases = _aliases("BRAND = 'brand'\n_APP = BRAND\n")
+        from crap4py.scattered_constants import _alias_violations
+
+        self.assertEqual(_alias_violations(aliases, False), [])
+
+    def test_non_all_caps_assignment_not_collected(self):
+        # The const convention is ALL_CAPS; lowercase aliases are variables.
+        self.assertEqual(_aliases("brand = 'brand'\n_app = brand\n"), [])
+
+    def test_check_files_default_flags_and_suppresses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.py").write_text(
+                "BRAND = 'brand'\n_APP = BRAND\nprint(_APP)\n", encoding="utf-8"
+            )
+            result = check_files([root / "a.py"], root)
+            self.assertEqual(len(result.violations), 1)
+            self.assertIn("alias `_APP` adds no information", result.violations[0].message)
+            self.assertEqual(summary(result), "1 pure alias(es) in 1 files")
+            self.assertEqual(check_files([root / "a.py"], root, flag_aliases=False).violations, [])
 
 
 class FalsePositiveTest(unittest.TestCase):
@@ -380,6 +485,20 @@ class CliSubprocessTest(unittest.TestCase):
         r = self._run("scattered-constants", "--min-files", "2")
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("repeats in 2 files (2 occurrences)", r.stdout)
+
+    def test_private_alias_flags_and_no_aliases_disables(self):
+        # Killing test: the default config flags the alias; --no-aliases
+        # (the ports' form of upstream's aliases: false) switches it off.
+        (self.root / "a.py").write_text(
+            "BRAND = 'brand'\n_APP = BRAND\nprint(_APP)\n", encoding="utf-8"
+        )
+        r = self._run("scattered-constants")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("alias `_APP` adds no information — reference `BRAND` directly", r.stdout)
+        self.assertIn("1 pure alias(es) in 1 files", r.stdout)
+        r = self._run("scattered-constants", "--no-aliases")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no literals repeat across files", r.stdout)
 
 
 if __name__ == "__main__":

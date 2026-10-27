@@ -8,12 +8,14 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from crap4py.test_assertions import check_files, count_assertions, run, summary, test_candidates
+# Aliased: a bare `test_candidates` import would itself be collected by pytest.
+from crap4py.test_assertions import check_files, count_assertions, run, summary
+from crap4py.test_assertions import test_candidates as candidates
 
 
 def _counts(source: str) -> dict[str, int]:
     tree = ast.parse(textwrap.dedent(source))
-    return {label: assertions for label, _, assertions in test_candidates(tree)}
+    return {label: assertions for label, _, assertions in candidates(tree)}
 
 
 class CountAssertionsTest(unittest.TestCase):
