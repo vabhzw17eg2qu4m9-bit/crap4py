@@ -21,6 +21,7 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .complexity import _FUNCTION_TYPES, _qualified
 from .files import PathLike, find_test_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 
 MIN_ASSERTIONS = 1
 _BARE_NAMES = frozenset({"raises", "fail"})
@@ -48,6 +49,7 @@ def run(argv: list[str], project_root: Path) -> int:
     args = _build_parser().parse_args(argv)
     files = _select_files(args.paths, project_root)
     result = check_files(files, project_root, args.min)
+    result = filter_ignored("test_assertions", result, project_root)
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(summary(result))

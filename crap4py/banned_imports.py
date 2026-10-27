@@ -18,6 +18,7 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 from .imports import from_import_paths, package_root, resolve_dotted
 
 _IMPORT_TYPES = (ast.Import, ast.ImportFrom)
@@ -66,7 +67,7 @@ def run(argv: list[str], project_root: Path) -> int:
     if not files:
         print(NO_FILES_MESSAGE)
         return 0
-    result = check_files(files, project_root, rules)
+    result = filter_ignored("banned_imports", check_files(files, project_root, rules), project_root)
     _print_violations(result.violations)
     print(summary(result))
     return 2 if result.violations else 0

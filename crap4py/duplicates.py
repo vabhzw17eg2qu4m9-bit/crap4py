@@ -46,6 +46,7 @@ from pathlib import Path
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .files import PathLike, expand_paths, find_source_files
+from .ignore_filter import filter_ignored
 
 MIN_TOKENS = 50
 MIN_LINES = 5
@@ -192,6 +193,7 @@ def run(argv: list[str], project_root: Path) -> int:
         skip_duplicate_files=args.skip_duplicate_files,
         report=args.report,
     )
+    result = filter_ignored("duplication", result, project_root)
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(result.summary)

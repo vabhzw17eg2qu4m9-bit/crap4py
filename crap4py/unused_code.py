@@ -16,6 +16,7 @@ from pathlib import Path
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .files import PathLike, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 
 _DECL_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
@@ -48,6 +49,7 @@ def run(argv: list[str], project_root: Path) -> int:
         print("unused-code: not meaningful for a partial selection")
         return 0
     result = check_files(find_source_files(project_root), project_root)
+    result = filter_ignored("unused_code", result, project_root)
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: '{violation.name}' is never referenced")
     print(summary(result))

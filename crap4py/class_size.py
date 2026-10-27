@@ -17,6 +17,7 @@ from .args import UsageErrorParser
 from .complexity import cyclomatic_complexity
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 
 MAX_METHODS = 25
 MAX_WMC = 80
@@ -60,6 +61,7 @@ def run(argv: list[str], project_root: Path) -> int:
         print(NO_FILES_MESSAGE)
         return 0
     result = check_files(files, project_root)
+    result = filter_ignored("class_size", result, project_root)
     for violation in result.violations:
         message = violation_message(violation.totals)
         print(f"{violation.file}:{violation.totals.line}: {message}")

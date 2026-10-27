@@ -16,6 +16,7 @@ from pathlib import Path
 from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .files import PathLike, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 from .imports import imported_paths, package_root
 
 _EXEMPT_NAMES = frozenset({"__init__.py", "__main__.py"})
@@ -40,6 +41,7 @@ def run(argv: list[str], project_root: Path) -> int:
         print("unused-files: not meaningful for a partial selection")
         return 0
     result = check_files(find_source_files(project_root), project_root)
+    result = filter_ignored("unused_files", result, project_root)
     for rel in result.violations:
         print(f"{rel}: never imported by any analyzed source file")
     print(summary(result))
