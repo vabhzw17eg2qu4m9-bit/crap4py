@@ -17,6 +17,7 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 
 MAX_WEIGHT = 0.33
 
@@ -53,6 +54,7 @@ def run(argv: list[str], project_root: Path) -> int:
         print(NO_FILES_MESSAGE)
         return 0
     result = check_files(files, project_root)
+    result = filter_ignored("weight_of_class", result, project_root)
     for violation in result.violations:
         print(
             f"{violation.file}:{violation.line}: class {violation.name} data weight "

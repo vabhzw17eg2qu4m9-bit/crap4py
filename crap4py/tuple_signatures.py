@@ -38,6 +38,7 @@ from .args import UsageErrorParser
 from .complexity import _FUNCTION_TYPES
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 
 MAX_FIELDS = 5
 
@@ -76,6 +77,7 @@ def run(argv: list[str], project_root: Path) -> int:
         print(NO_FILES_MESSAGE)
         return 0
     result = check_files(files, project_root, args.max_fields)
+    result = filter_ignored("inline_record_types", result, project_root)
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(summary(result))

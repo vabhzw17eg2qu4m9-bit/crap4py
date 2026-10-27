@@ -1,7 +1,7 @@
 """``scattered-constants`` subcommand: flags literals repeated across files.
 
 Port of the crap4dart ``scattered_constants`` gate (e766d68): the corpus-wide
-sibling of ``magic-constants``. Two finding kinds:
+sibling of ``magic-constants``. Three finding kinds:
 
 - **Constant regression** — a named constant for the value already exists
   somewhere in the corpus (module/class-level ALL_CAPS assignment with a
@@ -57,6 +57,7 @@ from .analyzer import _relative_to_root
 from .args import UsageErrorParser
 from .constants import NO_FILES_MESSAGE
 from .files import PathLike, expand_paths, find_source_files, is_test_file, parse_file
+from .ignore_filter import filter_ignored
 from .magic_constants import (
     MIN_LENGTH,
     _fstring_part_ids,
@@ -108,6 +109,7 @@ def run(argv: list[str], project_root: Path) -> int:
     result = check_files(
         files, project_root, args.min_files, args.min_length, args.min_value, args.aliases
     )
+    result = filter_ignored("scattered_constants", result, project_root)
     for violation in result.violations:
         print(f"{violation.file}:{violation.line}: {violation.message}")
     print(summary(result))

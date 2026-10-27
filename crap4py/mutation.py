@@ -55,6 +55,7 @@ from .complexity import extract_methods
 from .constants import DEFAULT_COVERAGE
 from .coverage import FileCoverage, parse_coverage_dict
 from .files import PathLike, expand_paths, find_source_files, parse_file
+from .ignore_filter import filter_ignored
 
 MIN_SCORE = 0.8
 MAX_SURVIVORS = 0
@@ -1494,6 +1495,7 @@ def run(argv: list[str], project_root: Path) -> int:
         diff=diff,
         scope_tests=args.scope_tests,
     )
+    result = filter_ignored("mutation", result, project_root)
     return _print_result(result)
 
 

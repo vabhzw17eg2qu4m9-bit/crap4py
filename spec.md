@@ -342,11 +342,13 @@ The crap4dart 0.8.6 perf fix (compile globs to regexes once per pattern
 instead of per file) needs no port: `fnmatch.fnmatch` already caches
 compiled patterns per pattern in the standard library.
 
-**Adaptation note (§12–§19):** crap4dart 0.5.0's gate-framework features —
-`severity` (`error`/`warning`), `ignorable`/`crap:ignore` suppression,
-per-path `entries` threshold overrides, yaml config and baselines — are
-not ported: ports have no config system, so thresholds are the upstream
-defaults (5 / 25+80 / 0.33 / 3+4) and each gate is a standalone subcommand.
+**Adaptation note (§12–§19, §31):** crap4dart 0.5.0's gate-framework
+features — `severity` (`error`/`warning`), per-path `entries` threshold
+overrides, yaml config and baselines — are not ported: ports have no
+config system, so thresholds are the upstream defaults (5 / 25+80 / 0.33
+/ 3+4) and each gate is a standalone subcommand. The `ignorable`/
+`crap:ignore` suppression IS ported as the hardcoded ignorable registry
+(§31).
 
 ## 19. `magic-constants`
 
@@ -950,7 +952,7 @@ defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
 
 The command is informational and ALWAYS exits 0 — the exploration tool for
 tuning thresholds; usage/flag errors exit 1. There is no config file and
-no `check` pipeline (§31), so upstream's gate config maps to the
+no `check` pipeline (§32), so upstream's gate config maps to the
 strictly validated kebab-case flags: `--jaccard`/`--containment` outside
 0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
 are usage errors. Opt-in by nature: nothing in the default analyze path
@@ -1215,7 +1217,7 @@ Adaptation notes:
   phrasing across gate modules) therefore surface as findings; renaming
   docstrings per file is the accepted remainder, not extraction targets.
 - **No `ignore` option** — upstream's value/path-glob ignore list needs
-  the config system; the ports' flag surface has no config keys (§31).
+  the config system; the ports' flag surface has no config keys (§32).
   Generic vocabulary ('utf-8', test-framework names, argparse metavar
   words) is accepted remainder. Upstream's `aliases` config key (bool,
   default true) maps to the `--aliases/--no-aliases` flag (default on);
@@ -1245,7 +1247,73 @@ Adaptation notes:
   own review lesson). No `magic-constants` interaction: the shared homes
   are the same ALL_CAPS declarations that gate already exempts.
 
-## 31. Non-goals
+## 31. Ignore markers (gate framework)
+
+Port of crap4dart 8abb64c ("ignore comments: gate-specific granularity").
+Gate violations may be suppressed by source comments, adapted from Dart's
+`//` to Python's `#`; marker literals stay ASCII (`ignore:`,
+`ignore-file:`, `crap:ignore`, `crap:ignore-file`).
+
+Grammar and scopes:
+
+- `# crap:ignore` — legacy blanket line marker: suppresses every ignorable
+  gate on its line. Detection is a substring match, like upstream (a
+  `crap:ignore-file` line therefore also carries line scope).
+- `# ignore:<gate-id>` — granular line marker: suppresses only that gate
+  on its line. Dart lint style — ONE id per marker, several markers union.
+  Match rule `#\s*ignore:([^\s#]*)`: a comma id is ONE unknown id (comma
+  lists are silently inert) and unknown ids match nothing; an empty id
+  (`# ignore:`) is a blanket — every ignorable gate.
+- Line scope: the violation's line (trailing marker counts — and, as
+  upstream, a trailing marker on the line directly above), or the run of
+  WHOLE-LINE markers stacked above the violation: every trimmed line
+  starting with exactly `# ignore:` or `# ignore-file:` continues the
+  run; the first non-marker line stops it. `#ignore:` without the space
+  still matches the granular rule on its own line but does not continue
+  a run.
+- `# crap:ignore-file` / `# ignore-file:<gate-id>` — file scope: first
+  5 lines of the violation's file, several markers union, empty id =
+  blanket. File markers outside the first 5 lines are inert.
+- Violations without a line number (`class-size` totals, `file-naming`,
+  `unused-files` paths) are only suppressed by file-scoped markers;
+  unreadable files are never suppressed.
+
+Opt-in: suppression applies only to gates in
+`ignore_filter.IGNORABLE_GATES`. Upstream gates carry a per-gate
+`ignorable: true` config flag (default false); the ports' flag surface
+has no config system (§32), so the hardcoded registry IS the opt-in.
+The filter runs once per gate at the shared violation path — after the
+scan, before printing and exit-code aggregation. Ignorable gate ids:
+
+| Subcommand            | Gate id               | Line scope | File scope |
+|-----------------------|-----------------------|------------|------------|
+| `complexity`          | `complexity`          | yes        | yes        |
+| `nesting`             | `nesting`             | yes        | yes        |
+| `class-size`          | `class_size`          | — (no line)| yes        |
+| `weight-of-class`     | `weight_of_class`     | yes        | yes        |
+| `unused-code`         | `unused_code`         | yes        | yes        |
+| `unused-files`        | `unused_files`        | — (no line)| yes        |
+| `banned-imports`      | `banned_imports`      | yes        | yes        |
+| `magic-constants`     | `magic_constants`     | yes        | yes        |
+| `scattered-constants` | `scattered_constants` | yes        | yes        |
+| `test-assertions`     | `test_assertions`     | yes        | yes        |
+| `duplicates`          | `duplication`         | yes        | yes        |
+| `mutation`            | `mutation`            | yes        | yes        |
+| `tuple-signatures`    | `inline_record_types` | yes        | yes        |
+| `file-naming`         | `file_naming`         | — (no line)| yes        |
+
+Not ignorable: `folder-structure` (directory-level findings — nothing
+line- or file-scoped can address them), `similarity`/`memory`
+(informational, always exit 0), `profile`/`skill` (not gates). A gate
+family a port lacks is simply not ignorable there.
+
+Host adaptations vs upstream: `//` → `#` in the match rules and the
+whole-line prefixes; marker matching stays textual on the raw source
+line — a marker inside a string literal on a violating line suppresses
+too (upstream has the same property); gate ids keep upstream's
+snake_case, mapped from the kebab-case subcommands.
+
+## 32. Non-goals
 
 - No runtime dependencies (stdlib only).
 - No branch coverage — line coverage only (matches the cross-port contract).
@@ -1255,8 +1323,10 @@ Adaptation notes:
   reads any text per §27) or non-coverage.py formats.
 - No config file and no gate framework (crap4py is a flag-based single
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
-  are not ported. Gate severity/ignorable/entries/baseline features of
-  crap4dart 0.5.0 are likewise not ported (§18 adaptation note).
+  are not ported. Gate severity/entries/baseline features of crap4dart
+  0.5.0 are likewise not ported (§18 adaptation note); the
+  `ignorable`/ignore-comment opt-in IS ported as a hardcoded registry
+  (§31).
 
 Not ported from crap4dart 0.7–0.9 (upstream-specific):
 

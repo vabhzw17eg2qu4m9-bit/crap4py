@@ -313,9 +313,66 @@ tree in an outer `finally` — a per-site restore can be defeated out-of-process
 as `INTEGRITY: re-restored after run: <files>` in the summary plus a stderr
 warning telling you to treat the run as suspect.
 
-crap4dart's gate-framework features (severity, `ignorable`/ignore comments,
-per-path threshold entries, yaml config, baselines) are not ported — ports
-are flag-based with upstream default thresholds.
+crap4dart's remaining gate-framework features (severity, per-path
+threshold entries, yaml config, baselines) are not ported — ports are
+flag-based with upstream default thresholds. Ignore comments ARE ported
+(crap4dart 8abb64c): see [Ignore markers](#ignore-markers).
+
+## Ignore markers
+
+Gate violations can be suppressed by source comments (port of
+crap4dart 8abb64c, adapted from `//` to Python's `#`; marker literals
+stay ASCII):
+
+```python
+_v = 0xFF00FF00  # crap:ignore                     legacy blanket: every ignorable gate, this line
+_v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, this line
+# ignore:magic_constants                         a whole-line marker covers the line below
+# ignore:magic_constants                         stacked whole-line markers all apply
+# ignore:unused_code                             ...to the code line that ends the run
+# ignore-file:unused_code                        file scope: first 5 lines of the file
+# ignore-file:                                   empty id = blanket (every ignorable gate)
+```
+
+- **Line scope** covers the violation's line (trailing marker counts) or
+  the run of whole-line markers stacked directly above it; the walk stops
+  at the first non-marker line. Detection is textual, like upstream: a
+  marker inside a string literal on a violating line suppresses too.
+- **File scope** reads the first 5 lines of the violation's file; markers
+  on line 6+ are inert. Violations without a line number (`class-size`,
+  `file-naming`, `unused-files`) are silenced by file markers only.
+- **One id per marker** (Dart lint style): several markers on one line
+  union; an empty id (`# ignore:`) is a blanket; a comma id is ONE
+  unknown id — comma lists are inert — and unknown ids match nothing.
+- **Legacy parity**: `# crap:ignore` / `# crap:ignore-file` keep their
+  blanket scope (substring match, so a `crap:ignore-file` line also
+  carries line scope — an upstream quirk kept verbatim).
+- **Opt-in per gate**: upstream's per-gate `ignorable: true` config flag
+  has no config system to live in here, so the hardcoded
+  `ignore_filter.IGNORABLE_GATES` registry IS the opt-in. Suppression
+  runs once per gate at the shared violation path (after the scan,
+  before printing/exit code), never per-gate copies.
+
+| Subcommand          | Marker gate id       | Line scope | File scope |
+|---------------------|----------------------|------------|------------|
+| `complexity`        | `complexity`         | yes        | yes        |
+| `nesting`           | `nesting`            | yes        | yes        |
+| `class-size`        | `class_size`         | — (no line)| yes       |
+| `weight-of-class`   | `weight_of_class`    | yes        | yes        |
+| `unused-code`       | `unused_code`        | yes        | yes        |
+| `unused-files`      | `unused_files`       | — (no line)| yes        |
+| `banned-imports`    | `banned_imports`     | yes        | yes        |
+| `magic-constants`   | `magic_constants`    | yes        | yes        |
+| `scattered-constants`| `scattered_constants`| yes       | yes        |
+| `test-assertions`   | `test_assertions`    | yes        | yes        |
+| `duplicates`        | `duplication`        | yes        | yes        |
+| `mutation`          | `mutation`           | yes        | yes        |
+| `tuple-signatures`  | `inline_record_types`| yes        | yes        |
+| `file-naming`       | `file_naming`        | — (no line)| yes        |
+
+Not ignorable: `folder-structure` (directory-level findings — nothing
+line- or file-scoped can address them), `similarity`/`memory`
+(informational, always exit 0), `profile`/`skill` (not gates).
 
 ## `crap4py similarity`
 
