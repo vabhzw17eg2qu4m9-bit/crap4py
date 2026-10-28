@@ -52,6 +52,7 @@ IGNORABLE_GATES = frozenset(
         "complexity",
         "duplication",
         "file_naming",
+        "identical_branches",
         "inline_record_types",
         "magic_constants",
         "mutation",
@@ -85,6 +86,7 @@ def filter_ignored(gate_id: str, result, project_root):
 
 
 def _suppressed(violation, gate_id: str, root: Path, sources: dict) -> bool:
+    # ignore:identical_branches deliberate fallback: a file-less violation targets itself
     target = getattr(violation, "file", violation)
     path = Path(target)
     if not path.is_absolute():

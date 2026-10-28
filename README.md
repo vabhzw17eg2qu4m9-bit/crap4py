@@ -77,6 +77,7 @@ crap4py memory               # per-test alloc churn + GC attribution (informatio
 crap4py tuple-signatures     # flag inline tuple annotations in function signatures
 crap4py reorder              # rewrite class bodies into canonical member order
 crap4py string-hazards       # flag escaped f-strings, regex anchors, literal-pattern anchors
+crap4py identical-branches   # flag the copy-paste-edit family inside one construct
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -176,6 +177,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 | `tuple-signatures [--max-fields N] [paths...]` | a function signature (parameter or return annotation) contains an inline tuple shape — `tuple[int, str]` / `typing.Tuple[...]` (bare `Tuple` counts; variadic `tuple[X, ...]` exempt; nested-in-type-args included, outermost reported); shapes with more than N (default 5) elements add an over-cap note. |
 | `string-hazards [--severity warning\|error] [paths...]` | a string literal's escaping or pattern usage contradicts the author's almost-certain intent: `{{name}}` inside an f-string while `name` is genuinely interpolated elsewhere in the same file (escaped interpolation); a string passed to the `re.compile` family whose value ends `\$` or starts `\^` (escaped regex anchor — literal dollar/caret match where the anchor was intended); or a string first argument of `str.replace`/`split`/`rsplit`/`partition`/`rpartition` starting `^` or ending `$` (anchors in a literal pattern). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
+| `identical-branches [--severity warning\|error] [paths...]` | the copy-paste-edit family — syntactically identical pieces inside one construct, compared by canonical form (whitespace/comment/parenthesis-independent, commutative operands sorted, same-operator nests flattened): duplicate conditions or branch bodies in one `if`/`elif` chain; duplicate operands in one `and`/`or` chain plus absorbed operands (`a or b and a`); identical ternary branches (`x if c else x`); duplicate positional arguments in one call (keyword arguments exempt, all-literal lists exempt, a literal never the repeat); duplicate except bodies in one `try` (exception types are semantically distinct and never compared). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -259,10 +261,51 @@ only. Three finding kinds, each mapped to Python's honest analog:
 
 Severity: upstream defaults the gate to `warning` — findings are reported
 (`[WARN] file:line: message`) but do not fail the run (exit `0`);
-`--severity error` restores the fatal exit `2`. This is the port's first
+`--severity error` restores the fatal exit `2`. This was the port's first
 warning-default gate (all others are error-default), standing in for
 upstream's per-gate `severity` config key; ignore markers
 (`# ignore:string_hazards`) are honored — the gate is ignorable.
+
+`identical-branches` is the port of crap4dart's `identical_branches` gate
+(c6b2425add): flags the copy-paste-edit family — syntactically identical
+pieces inside one construct where a second, slightly different piece was
+intended. Six checks, all comparing by canonical form: Python's AST
+carries no parentheses or comments, so comparing AST structure is
+whitespace-, comment- and parenthesis-insensitive for free; operands of
+commutative operators sort (`a == b` matches `b == a`, `a and b` matches
+`b and a`) and same-operator nests flatten (`a + b + c` compares equal
+regardless of grouping; `a - (b - c)` does not equal `a - b - c`):
+
+- duplicate conditions in one `if`/`elif` chain — every later branch is
+  unreachable;
+- duplicate branch bodies in one chain (`else` == then; a
+  single-statement list equals the naked statement, so the violation
+  points at the statement);
+- duplicate operands in one `and`/`or` chain (`a or a`; only the
+  outermost link of a same-operator chain reports) and absorbed operands
+  (`a or b and a` collapses to `a` — the absorption law, both ways);
+- identical ternary branches (`x if c else x` — the condition is dead);
+- duplicate positional arguments in one call (`f(w, h, w)`) — keyword
+  arguments are exempt (the name documents the slot), all-literal lists
+  are exempt (uniform-value APIs like `Rectangle(8, 8, 8, 8)` stay
+  quiet), and a literal is never reported as the repeat;
+- duplicate except bodies in one `try` — duplicate exception TYPES are
+  deliberately not flagged: Python dispatches handlers per type, so the
+  types are semantically distinct in a way Dart `case` labels are not.
+
+Canonical-form operators, per the cross-port contract: `==`, `!=` and
+`in` sort their two operands (`in` is the Python-only member the
+contract adds), `and`/`or`/`+`/`*`/`&`/`|`/`^` flatten and sort; `is`/
+`is not`/`not in`, the directional comparisons (`< > <= >=`) and
+non-associative arithmetic (`- / % // ** << >> @`) keep operand order.
+Only pieces of the same construct are compared; identical conditions in
+separate `if` statements are legal (the state may change between them),
+and `match` is excluded like upstream's `switch`. Python specifics: an
+`if` after an `else:` is by construction a chain link (no elif AST
+node), and `except*` groups' bodies are compared like plain handlers.
+Severity as above (`warning` default, `--severity error` exits 2);
+ignore markers (`# ignore:identical_branches`) are honored — the gate is
+ignorable.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -414,6 +457,7 @@ _v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, thi
 | `mutation`          | `mutation`           | yes        | yes        |
 | `tuple-signatures`  | `inline_record_types`| yes        | yes        |
 | `string-hazards`    | `string_hazards`     | yes        | yes        |
+| `identical-branches`| `identical_branches` | yes        | yes        |
 | `file-naming`       | `file_naming`        | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -599,7 +643,7 @@ be files or directories.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error` violations, and `reorder --dry-run` when any file would change. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error` and `identical-branches --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 
