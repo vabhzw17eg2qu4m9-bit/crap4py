@@ -57,6 +57,7 @@ IGNORABLE_GATES = frozenset(
         "mutation",
         "nesting",
         "scattered_constants",
+        "string_hazards",
         "test_assertions",
         "unused_code",
         "unused_files",

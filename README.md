@@ -76,6 +76,7 @@ crap4py similarity           # scan for near-duplicate files (console/json)
 crap4py memory               # per-test alloc churn + GC attribution (informational)
 crap4py tuple-signatures     # flag inline tuple annotations in function signatures
 crap4py reorder              # rewrite class bodies into canonical member order
+crap4py string-hazards       # flag escaped f-strings, regex anchors, literal-pattern anchors
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -174,6 +175,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `duplicates [--threshold N] [--min-tokens N] [--min-lines N] [--ignore-locals] [--ignore-literals] [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files] [--report percentage\|clones] [--exclude GLOB]... [--source PATH]... [paths...]` | a file's duplicated-line share (Rabin-Karp over token windows, `--min-tokens` 50 / `--min-lines` 5 defaults) exceeds N percent (default 1.0) — matches within or across files. `--report clones` switches to one violation per non-overlapping clone group (PMD CPD style). `--ignore-locals`/`--ignore-literals` opt into Type-2 normalization, `--ignore-identifiers`/`--ignore-imports`/`--skip-duplicate-files` are the CPD-parity knobs (below). |
 | `mutation [--coverage PATH] [--min-score N] [--max-survivors N] [--timeout-seconds N] [--max-mutants N] [--operator CATEGORY]... [--exclude GLOB]... [--cache/--no-cache] [--test-args ARG]... [--scope-tests/--no-scope-tests] [--diff-base REF] [paths...]` | the mutation score (killed ÷ (killed + survived), uncovered sites excluded) is below N (default 0.8) or survived mutants exceed M (default 0). One violation per survived mutant; a timeout counts as survived, an import/compile error as killed. |
 | `tuple-signatures [--max-fields N] [paths...]` | a function signature (parameter or return annotation) contains an inline tuple shape — `tuple[int, str]` / `typing.Tuple[...]` (bare `Tuple` counts; variadic `tuple[X, ...]` exempt; nested-in-type-args included, outermost reported); shapes with more than N (default 5) elements add an over-cap note. |
+| `string-hazards [--severity warning\|error] [paths...]` | a string literal's escaping or pattern usage contradicts the author's almost-certain intent: `{{name}}` inside an f-string while `name` is genuinely interpolated elsewhere in the same file (escaped interpolation); a string passed to the `re.compile` family whose value ends `\$` or starts `\^` (escaped regex anchor — literal dollar/caret match where the anchor was intended); or a string first argument of `str.replace`/`split`/`rsplit`/`partition`/`rpartition` starting `^` or ending `$` (anchors in a literal pattern). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -219,6 +221,48 @@ ported (flag-based surface, no config system — its `aliases` config key
 maps to the `--aliases/--no-aliases` flag). Test files and
 build/dist/venv trees are excluded by the default selection;
 identifier-position strings are exempt, per upstream semantics.
+
+`string-hazards` is the port of crap4dart's `string_hazards` gate
+(62fec6833e): flags string literals whose escaping or pattern usage
+contradicts what the author almost certainly meant, from the parsed AST
+only. Three finding kinds, each mapped to Python's honest analog:
+
+- **Escaped f-string interpolation** — upstream flags `\$name` inside a
+  non-raw Dart string (renders the literal text `$name`); Python's analog
+  is `{{name}}` inside an f-string (doubled braces render a literal
+  `{name}`). Flagged only when the same identifier is genuinely
+  interpolated elsewhere in the same file (sibling evidence — the root
+  receiver of some `{a.b[i].c()}` field), which keeps deliberate literal
+  braces (shell text, templates) quiet; one finding per (line, identifier).
+  Raw-ness is deliberately not consulted: unlike Dart raw strings (where
+  `\$` stays `\$`), `{{ }}` unescaping is a brace rule that behaves
+  identically in raw f-strings. Plain (non-f) strings never interpolate in
+  Python — nothing to escape, never scanned.
+- **Escaped regex anchor** — a string passed to the `re.compile` family
+  (`compile`, `match`, `search`, `fullmatch`, `findall`, `finditer`,
+  `split`, `sub`, `subn` — first positional or `pattern=`) whose value ends
+  `\$` or starts `\^`: the regex matches a literal dollar/caret where the
+  end/start anchor was almost certainly intended. The check is value-based,
+  not raw-based: in Python an unrecognized escape such as `'\$'` survives
+  into the regex in BOTH raw and non-raw strings (unlike Dart, where a
+  non-raw `'\$'` decodes to a bare `$` anchor), so both spellings carry the
+  bug upstream's raw-string check catches.
+- **Anchors in literal `str` patterns** — `str.replace`/`split`/`rsplit`/
+  `partition`/`rpartition` treat their pattern argument as literal text, so
+  a leading `^` or trailing `$` can only match that literal character; a
+  regex was probably intended. Only a string-literal first positional
+  argument is checked (a variable or call argument is spared, as upstream);
+  a value ending `\$` is an explicitly escaped, deliberate dollar and is
+  spared. Python has no adjacent-string literals (implicit concatenation
+  already merges into one constant), so the merged value is checked whole;
+  `re.split` is a regex call (previous kind), not this kind.
+
+Severity: upstream defaults the gate to `warning` — findings are reported
+(`[WARN] file:line: message`) but do not fail the run (exit `0`);
+`--severity error` restores the fatal exit `2`. This is the port's first
+warning-default gate (all others are error-default), standing in for
+upstream's per-gate `severity` config key; ignore markers
+(`# ignore:string_hazards`) are honored — the gate is ignorable.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -369,6 +413,7 @@ _v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, thi
 | `duplicates`        | `duplication`        | yes        | yes        |
 | `mutation`          | `mutation`           | yes        | yes        |
 | `tuple-signatures`  | `inline_record_types`| yes        | yes        |
+| `string-hazards`    | `string_hazards`     | yes        | yes        |
 | `file-naming`       | `file_naming`        | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -554,7 +599,7 @@ be files or directories.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, and `reorder --dry-run` when any file would change. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 
