@@ -38,6 +38,7 @@ _SUBCOMMANDS = (
     "memory",
     "tuple-signatures",
     "reorder",
+    "string-hazards",
 )
 
 _USAGE = """\
@@ -63,6 +64,7 @@ Usage:
   crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
   crap4py tuple-signatures [p.] Flag inline tuple annotations in function signatures.
   crap4py reorder [-n] [p..]   Rewrite class bodies into canonical member order.
+  crap4py string-hazards [p.]  Flag escaped f-strings, regex anchors, literal-pattern anchors.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -178,6 +180,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         scattered_constants,
         similarity,
         skill,
+        string_hazards,
         test_assertions,
         tuple_signatures,
         unused_code,
@@ -206,5 +209,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "memory": memory.run,
         "tuple-signatures": tuple_signatures.run,
         "reorder": reorder.run,
+        "string-hazards": string_hazards.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)

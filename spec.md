@@ -1300,6 +1300,7 @@ scan, before printing and exit-code aggregation. Ignorable gate ids:
 | `duplicates`          | `duplication`         | yes        | yes        |
 | `mutation`            | `mutation`            | yes        | yes        |
 | `tuple-signatures`    | `inline_record_types` | yes        | yes        |
+| `string-hazards`      | `string_hazards`      | yes        | yes        |
 | `file-naming`         | `file_naming`         | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -1362,8 +1363,9 @@ be skipped with a note and shall not fail the run.
 - No config file and no gate framework (crap4py is a flag-based single
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
   are not ported. Gate severity/entries/baseline features of crap4dart
-  0.5.0 are likewise not ported (§18 adaptation note); the
-  `ignorable`/ignore-comment opt-in IS ported as a hardcoded registry
+  0.5.0 are likewise not ported (§18 adaptation note) — except the
+  string-hazards gate's severity, which maps to a `--severity` flag (§34);
+  the `ignorable`/ignore-comment opt-in IS ported as a hardcoded registry
   (§31).
 
 Not ported from crap4dart 0.7–0.9 (upstream-specific):
@@ -1375,3 +1377,60 @@ Not ported from crap4dart 0.7–0.9 (upstream-specific):
 - `run_tests: true` running the full suite on every analyze by default —
   breaking for a CLI; the port keeps `--run-tests` opt-in (§11).
 - pixel-detector tuning commits — depend on `broken_goldens` (above).
+
+## 34. `string-hazards`
+
+```
+crap4py string-hazards [paths...] [--severity warning|error]
+```
+
+The `string_hazards` gate (62fec6833e — port of crap4dart's
+`string_hazards` gate) shall flag string literals whose escaping or pattern
+usage contradicts what the author almost certainly meant, from the parsed
+AST only. Three finding kinds, each the Python analog of the upstream Dart
+shape (§34 mapping is normative):
+
+1. **Escaped f-string interpolation** — upstream: `\$name`/`\${name}`
+   inside a non-raw string renders the literal text `$name`. Python maps
+   the shape to `{{name}}` inside an f-string: the gate scans the f-string's
+   decoded literal parts (Constant values of `JoinedStr`), where a literal
+   brace can only come from a `{{` escape, so `{identifier` in decoded text
+   is precisely the escaped form rendering a literal `{identifier}`. Such
+   an occurrence shall be flagged ONLY when the same identifier is genuinely
+   interpolated elsewhere in the same file — the root receiver of some
+   replacement-field expression (`{a.b[i].c()}` evidences `a`) — one
+   finding per (line, identifier). Without sibling evidence the escape is
+   presumed deliberate (shell text, literal-brace templates). Raw-ness
+   shall not be consulted: `{{ }}` unescaping is a brace rule identical in
+   raw f-strings (unlike Dart raw strings, where `\$` stays `\$`). Plain
+   (non-f) strings never interpolate in Python and shall never be scanned
+   for this kind.
+2. **Escaped regex anchor** — a string literal passed to the
+   `re.compile` family (`compile`, `match`, `search`, `fullmatch`,
+   `findall`, `finditer`, `split`, `sub`, `subn`; first positional argument
+   or `pattern=` keyword) whose VALUE ends with `\$` or starts with `\^`.
+   The regex then matches a literal dollar/caret where the end/start anchor
+   was almost certainly intended. The check shall be value-based, not
+   rawness-based: in Python an unrecognized escape such as `'\$'` survives
+   into the regex in BOTH raw and non-raw strings (unlike Dart, where a
+   non-raw `'\$'` decodes to a bare `$` anchor), so both spellings carry
+   the bug the upstream raw-string check catches. A non-literal pattern
+   argument (name, call) shall be spared, as shall escaped anchors in
+   strings outside the `re` family.
+3. **Anchors in literal `str` patterns** — a string literal passed as the
+   first positional argument of `str.replace`, `split`, `rsplit`,
+   `partition` or `rpartition` (the pattern is matched literally) whose
+   value starts with `^` or ends with an unescaped `$` (a value ending
+   `\$` is an explicitly escaped, deliberate dollar and shall be spared).
+   Python has no adjacent-string literals — implicit concatenation already
+   merges into one constant, so the merged value is checked whole.
+   `re.split` is a regex call (kind 2), not this kind; a non-string or
+   non-literal first argument shall be spared.
+
+Every violation shall carry the file (project-relative) and line of the
+offending literal. Severity: `warning` by default — violations are
+reported (`[WARN] file:line: message`) and the exit code is `0`;
+`--severity error` makes violations exit `2`. This flag stands in for
+upstream's per-gate `severity` config key (§33) and is the port's only
+warning-default gate; ignore markers (`# ignore:string_hazards` /
+`# crap:ignore`) apply per §31 (the gate is ignorable).
