@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.24.0...v0.25.0) (2026-10-28)
+
+
+### Features
+
+* **gate:** string-hazards — escaped interpolations, regex anchors, literal-pattern anchors (adapted from upstream 62fec6833) ([#64](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/64)) ([4d1c638](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/4d1c638dfe7728028a54ba6665178b9701c0c51f))
+
 ## [0.24.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.23.0...v0.24.0) (2026-10-27)
 
 
