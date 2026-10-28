@@ -1301,6 +1301,7 @@ scan, before printing and exit-code aggregation. Ignorable gate ids:
 | `mutation`            | `mutation`            | yes        | yes        |
 | `tuple-signatures`    | `inline_record_types` | yes        | yes        |
 | `string-hazards`      | `string_hazards`      | yes        | yes        |
+| `identical-branches`  | `identical_branches`  | yes        | yes        |
 | `file-naming`         | `file_naming`         | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -1364,9 +1365,9 @@ be skipped with a note and shall not fail the run.
   surface, unlike crap4dart); `--tags`/`--exclude-tags` profiling filters
   are not ported. Gate severity/entries/baseline features of crap4dart
   0.5.0 are likewise not ported (§18 adaptation note) — except the
-  string-hazards gate's severity, which maps to a `--severity` flag (§34);
-  the `ignorable`/ignore-comment opt-in IS ported as a hardcoded registry
-  (§31).
+  warning-default gates' severity, which maps to a `--severity` flag
+  (§34, §35); the `ignorable`/ignore-comment opt-in IS ported as a
+  hardcoded registry (§31).
 
 Not ported from crap4dart 0.7–0.9 (upstream-specific):
 
@@ -1431,6 +1432,80 @@ Every violation shall carry the file (project-relative) and line of the
 offending literal. Severity: `warning` by default — violations are
 reported (`[WARN] file:line: message`) and the exit code is `0`;
 `--severity error` makes violations exit `2`. This flag stands in for
-upstream's per-gate `severity` config key (§33) and is the port's only
-warning-default gate; ignore markers (`# ignore:string_hazards` /
-`# crap:ignore`) apply per §31 (the gate is ignorable).
+upstream's per-gate `severity` config key (§33) and is one of the port's
+warning-default gates (§35 is the other); ignore markers
+(`# ignore:string_hazards` / `# crap:ignore`) apply per §31 (the gate is
+ignorable).
+
+## 35. `identical-branches`
+
+```
+crap4py identical-branches [paths...] [--severity warning|error]
+```
+
+The `identical_branches` gate (c6b2425add — port of crap4dart's
+`identical_branches` gate) shall flag the copy-paste-edit family —
+syntactically identical pieces inside one construct where a second,
+slightly different piece was intended. All checks compare by canonical
+form over the parsed AST: Python's AST carries no parentheses and no
+comments, so comparing AST structure is whitespace-, comment- and
+parenthesis-insensitive by construction. Operands of commutative
+operators sort (`a == b` matches `b == a`, `a and b` matches `b and a`)
+and same-operator nests of associative operators flatten (`a and b and c`
+compares equal regardless of grouping; `a - (b - c)` differs from
+`a - b - c`). Canonical-form operators, per the cross-port contract:
+`==` (`Eq`), `!=` (`NotEq`) and `in` (`In` — the Python-only member the
+contract adds) sort their two operands; `and`/`or` and the bitwise/
+arithmetic `+ * & | ^` flatten same-operator nests and sort; `is`/
+`is not`/`not in`, the directional comparisons (`< > <= >=`) and
+non-associative arithmetic (`- / % // ** << >> @`) keep operand order
+(identity reads directionally — `is` is deliberately never sorted).
+Unary operators render `op(operand)`; leaves render as structural AST
+text. Six finding kinds:
+
+1. **Duplicate conditions** — two links of one `if`/`elif` chain whose
+   conditions compare equal; every later branch is unreachable. Python
+   has no `elif` AST node (an elif is an `If` in the head's `orelse`),
+   so an `if` after an `else:` is by construction a chain link of the
+   same chain. `match` shall be excluded (upstream excludes `switch`).
+2. **Duplicate branch bodies** — two bodies in one chain whose
+   statements compare equal by structural text; a single-statement list
+   shall compare equal to the naked statement (free in Python, where
+   both spellings are a one-element list). The violation shall point at
+   the statement's line.
+3. **Duplicate and absorbed operands** — one boolean chain whose
+   flattened operand list contains a repeated canonical operand (`a or a`
+   — only the outermost link of a same-operator chain shall be checked),
+   or an operand that also appears standalone as another top-level
+   operand's conjunct (for `or`) or disjunct (for `and`) — the
+   absorption law (`a or b and a` collapses to `a`), same law both ways.
+   Only the first such finding per chain shall be reported.
+4. **Identical ternary branches** — an `x if c else y` expression whose
+   then and else expressions compare equal.
+5. **Duplicate positional arguments** — one call whose positional
+   argument list contains a repeated canonical argument. Keyword
+   arguments shall be exempt (the name documents the slot); an
+   all-literal argument list shall be exempt (uniform-value APIs like
+   `Rectangle(8, 8, 8, 8)` stay quiet); a literal argument shall never
+   be reported as the repeat (only name-like repeats report — a repeated
+   `-8` reports, mirroring upstream, where `-8` is a unary expression
+   rather than a literal). A `**` expansion is unnamed and shall count
+   as a positional slot.
+6. **Duplicate except bodies** — two handlers of one `try` (including
+   `except*` groups) whose bodies compare equal. Duplicate exception
+   TYPES are deliberately not flagged: Python dispatches handlers per
+   type, so the types are semantically distinct in a way Dart `case`
+   labels are not; only the bodies are compared. `else`/`finally` bodies
+   are not compared.
+
+Only pieces of the *same* construct shall be compared; identical
+conditions in separate `if` statements are legal (the state may change
+between them). Test files are excluded by the default selection,
+matching the port's other AST gates. Every violation shall carry the
+file (project-relative) and line of the repeated occurrence. Severity:
+`warning` by default — violations are reported
+(`[WARN] file:line: message`) and the exit code is `0`; `--severity
+error` makes violations exit `2`. This flag stands in for upstream's
+per-gate `severity` config key (§33); ignore markers
+(`# ignore:identical_branches` / `# crap:ignore`) apply per §31 (the
+gate is ignorable).
