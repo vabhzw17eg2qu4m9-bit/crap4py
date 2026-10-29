@@ -669,10 +669,18 @@ drops them). Whole-line slices only: every member keeps its exact source
 text, and the file's line-ending style (LF/CRLF) and trailing-newline state
 are preserved.
 
-Never touched: `enum.Enum`-family subclasses (value order is semantics),
-bodies containing anything but members (`if`/`try`/nested class/bare
-expressions — their order may be semantic), members sharing a source line
-(`class A: x = 1` one-liners, semicolon lists — no safe slice points).
+Enums (`enum.Enum` family): the member assignments are never touched —
+value order is semantics (iteration order, `value` lookups, member
+identity) — while the member section after the last member assignment
+reorders like any class body; an enum without a member section comes back
+byte-identical. Python allows interleaving, so a member assignment after
+code freezes everything up to and including itself (mirroring upstream's
+constants-terminator span rule).
+
+Never touched: bodies containing anything but members (`if`/`try`/nested
+class/bare expressions — their order may be semantic), members sharing a
+source line (`class A: x = 1` one-liners, semicolon lists — no safe slice
+points).
 
 Deterministic: same input, same output; already-canonical bodies are left
 byte-identical whatever their layout; `fix(fix(x)) == fix(x)`. With

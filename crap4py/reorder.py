@@ -25,9 +25,13 @@ with the preceding member, so comments are never dropped (upstream drops them;
 here every slice is whole lines, and the between-member gap belongs to the
 preceding member).
 
-Never touched (value/layout order is semantics or has no safe slice points):
-``enum.Enum``-family subclasses, bodies containing anything but members
-(``if``/``try``/nested class/bare expressions), members sharing a source line
+Enums (``enum.Enum`` family): member assignments are never touched — value
+order is semantics — so the reorderable span starts after the LAST member
+assignment (an interleaved member freezes everything up to and including
+itself); the section after it reorders like any class body, and enums
+without a member section come back byte-identical. Also never touched:
+bodies containing anything but members (``if``/``try``/nested class/bare
+expressions), members sharing a source line
 (``class A: x = 1`` one-liners, semicolon lists).
 
 Deterministic: same input, same output; already-canonical bodies are left
@@ -70,6 +74,8 @@ class _Slice:
 def reorder_source(source: str) -> str:
     """Return ``source`` with class members in canonical order.
 
+    Enum member assignments stay frozen (value order is semantics); the
+    member section after the last one reorders like a class body.
     Pure function: the same input always produces the same output, and
     already-canonical input comes back byte-identical. Raises SyntaxError
     on unparseable input.
@@ -194,11 +200,11 @@ def _member_slices(node: ast.ClassDef, offsets: list[int], lines: list[str]) -> 
 def _reorderable_members(node: ast.ClassDef) -> tuple[list[ast.stmt], int] | None:
     """Members eligible for the stable partition plus the comment-walk floor
     line (docstring end, else class header), or None when the class must not
-    be touched: enum-family bodies (value order is semantics) and bodies
-    containing anything but members have no safe partition.
+    be touched: bodies containing anything but members have no safe partition.
+    Enum-family bodies take their own path (see :func:`_enum_members`).
     """
-    if not node.body or _is_enum_class(node):
-        return None
+    if _is_enum_class(node):
+        return _enum_members(node)
     doc_end = node.body[0].end_lineno if _is_docstring(node.body[0]) else 0
     members = node.body[1:] if doc_end else node.body
     if not _pure_members(members):
@@ -286,8 +292,47 @@ def _attribute_category(stmt: ast.stmt) -> int:
     return CONSTANTS if name and _CONSTANT_NAME.fullmatch(name) else ATTRS
 
 
+def _enum_members(node: ast.ClassDef) -> tuple[list[ast.stmt], int] | None:
+    """The member section of an enum-family body: everything after the LAST
+    member assignment, with that assignment's last line as the comment-walk
+    floor. The member assignments themselves are frozen — enum value order
+    is semantics — and Python's interleaving freedom makes "last" the safe
+    span start (the host analog of upstream's constants-terminator rule):
+    a member assignment after code freezes everything up to and including
+    it. An enum without member assignments has no constants to freeze, so
+    the whole body (docstring still leading) is an ordinary member section.
+
+    Returns None when there is no member section to reorder or it has no
+    safe partition.
+    """
+    members = node.body
+    boundary = 0
+    if members and _is_docstring(members[0]):
+        boundary = members[0].end_lineno
+        members = members[1:]
+    assigned = [i for i, m in enumerate(members) if _is_member_assignment(m)]
+    if assigned:
+        last = members[assigned[-1]]
+        members = members[assigned[-1] + 1 :]
+        boundary = last.end_lineno
+    if not _pure_members(members):
+        return None
+    return (members, boundary) if _shares_no_lines(members, boundary) else None
+
+
+def _is_member_assignment(stmt: ast.stmt) -> bool:
+    """Whether the statement could define an enum member: any assignment, or
+    an annotation carrying a value (a value-less annotation is a plain,
+    reorderable field). Dunder names like ``__slots__`` are conservatively
+    frozen too — never a correctness risk, unlike missing a member."""
+    return isinstance(stmt, ast.Assign) or (
+        isinstance(stmt, ast.AnnAssign) and stmt.value is not None
+    )
+
+
 def _is_enum_class(node: ast.ClassDef) -> bool:
-    """Whether the class inherits the enum family — value order is semantics."""
+    """Whether the class inherits the enum family — its member assignments
+    are frozen (value order is semantics)."""
     return any(_dotted_name(base).rpartition(".")[2] in _ENUM_BASE_NAMES for base in node.bases)
 
 

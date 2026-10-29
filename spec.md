@@ -1336,9 +1336,16 @@ decorators shall move with it — including a block separated from the member
 by a single blank line; two or more blank lines detach the block, and a
 detached block shall ride with the preceding member (no comment is ever
 dropped). Enum-family subclasses (`Enum`, `IntEnum`, `StrEnum`, `Flag`,
-`IntFlag`, dotted or bare) shall never be reordered (value order is
-semantics), nor shall bodies containing anything but member statements
-(`if`/`try`/nested class/bare expressions) or members sharing a source line
+`IntFlag`, dotted or bare) shall have their member assignments frozen —
+value order is semantics (iteration order, `value` lookups and member
+identity depend on it) — and the member section after the last member
+assignment shall be reordered into the canonical order exactly like a
+class body; an enum without a member section shall come back
+byte-identical. Because Python allows interleaving, a member assignment
+appearing after code shall freeze everything up to and including itself
+(the host analog of the constants-terminator span rule). Bodies containing
+anything but member statements (`if`/`try`/nested class/bare expressions)
+shall never be reordered, nor shall members sharing a source line
 (`class A: x = 1` one-liners, semicolon lists). A file's line-ending style
 (LF or CRLF) and its trailing-newline state shall be preserved.
 
