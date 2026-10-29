@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.27.0...v0.28.0) (2026-10-29)
+
+
+### Features
+
+* **cli:** reorder — enum member sections reorder, constants frozen (adapted from upstream f323c0bfec) ([#70](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/70)) ([895e788](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/895e788e829e779fef48914a0a29b34c59e0bdea))
+
+
+### Bug Fixes
+
+* **cli:** reorder keeps order-dependent class-body aliases with their antecedents ([#72](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/72)) ([d943526](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/d9435261c1f0dcb4cb3e543c2bcb523201728cb0))
+
 ## [0.27.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.26.0...v0.27.0) (2026-10-29)
 
 
