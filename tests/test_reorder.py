@@ -5,8 +5,10 @@ same-kind members keep source order), comment/decorator attachment (one blank
 keeps a comment block with its member, two detach it onto the preceding
 member — nothing is ever dropped), the corner layout battery (single-line
 classes, header/doc lines, CRLF, missing trailing newline, empty and
-comment-only files), the never-touch rules (enum-family bodies, non-member
-statements, shared lines), and the invariants battery (idempotence + token
+comment-only files), the never-touch rules (non-member statements, shared
+lines), the enum member-section rules (member assignments frozen — value
+order is semantics; the section after the last member assignment reorders
+like a class body), and the invariants battery (idempotence + token
 multiset + parseability over fixtures and the real package).
 """
 
@@ -212,7 +214,8 @@ class CornerLayoutTest(unittest.TestCase):
 
 
 class SafetyTest(unittest.TestCase):
-    def test_enum_subclasses_untouched(self):
+    def test_memberless_enum_subclasses_untouched(self):
+        # No member assignments → nothing to freeze, no member section.
         for base in ("Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"):
             src = f"from enum import {base}\n\nclass C({base}):\n    B = 1\n    A = 2\n"
             self.assertEqual(reorder_source(src), src, base)
@@ -273,6 +276,222 @@ class SafetyTest(unittest.TestCase):
     def test_is_a_pure_function(self):
         src = "class A:\n    def m(self): ...\n\n    X = 1\n"
         self.assertEqual(reorder_source(src), reorder_source(src))
+
+
+def member_names(code: str) -> list[str]:
+    """The enum member names of the first class in [code], source order —
+    the iteration order the transform must never change."""
+    cls = next(n for n in ast.parse(code).body if isinstance(n, ast.ClassDef))
+    names: list[str] = []
+    for stmt in cls.body:
+        if isinstance(stmt, ast.Assign):
+            names.extend(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            names.append(stmt.target.id)
+    return names
+
+
+class EnumMemberSectionTest(unittest.TestCase):
+    """Enums: member assignments stay frozen (value order is semantics);
+    the section after the LAST member assignment reorders like a class body
+    (adapted from crap4dart f323c0b, spec 11.24)."""
+
+    MESSY = (
+        "from enum import Enum\n"
+        "\n"
+        "\n"
+        "class Color(Enum):\n"
+        "    RED = 1\n"
+        "    GREEN = 2\n"
+        "\n"
+        "    def z_plain(self):\n"
+        "        return list(Color)\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def parse(raw):\n"
+        "        return Color(int(raw))\n"
+        "\n"
+        "    label: str\n"
+        "\n"
+        "    def __new__(cls, value):\n"
+        "        obj = object.__new__(cls)\n"
+        "        obj._value_ = value\n"
+        "        return obj\n"
+        "\n"
+        "    @property\n"
+        "    def upper(self):\n"
+        "        return self.name.upper()\n"
+    )
+
+    def test_member_section_reorders_into_canonical_order(self):
+        out = expect_consistent(self.MESSY)
+        self.assertLess(out.index("label: str"), out.index("__new__"))
+        self.assertLess(out.index("__new__"), out.index("def parse"))
+        self.assertLess(out.index("def parse"), out.index("def upper"))
+        self.assertLess(out.index("def upper"), out.index("def z_plain"))
+
+    def test_constants_block_is_byte_exact_across_reorders(self):
+        out = reorder_source(self.MESSY)
+        self.assertIn("    RED = 1\n    GREEN = 2\n", out)
+        head, _, _ = out.partition("    label: str")
+        self.assertTrue(head.rstrip().endswith("GREEN = 2"))
+
+    def test_constants_order_is_preserved_exactly(self):
+        self.assertEqual(member_names(self.MESSY), member_names(expect_consistent(self.MESSY)))
+
+    def test_iteration_semantics_survive(self):
+        before, after = {}, {}
+        exec(self.MESSY, before)
+        exec(reorder_source(self.MESSY), after)
+        original, reordered = before["Color"], after["Color"]
+        # value order (the constants block) is preserved exactly
+        self.assertEqual([m.name for m in reordered], [m.name for m in original])
+        self.assertEqual([m.name for m in reordered], ["RED", "GREEN"])
+        # the moved member section still behaves: value lookup, static
+        # method, property, and method bodies are all verbatim moves.
+        self.assertEqual(reordered(2).name, "GREEN")
+        self.assertEqual(reordered.parse("1").name, "RED")
+        self.assertEqual(reordered.GREEN.upper, "GREEN")
+        self.assertEqual([m.name for m in reordered.GREEN.z_plain()], ["RED", "GREEN"])
+
+    def test_comment_above_enum_member_moves_with_it(self):
+        src = (
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    # the label\n"
+            "    @property\n"
+            "    def upper(self): ...\n"
+        )
+        self.assertEqual(
+            expect_consistent(src),
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    # the label\n"
+            "    @property\n"
+            "    def upper(self): ...\n"
+            "\n"
+            "    def z(self): ...\n",
+        )
+
+    def test_docstring_stays_first_and_frozen(self):
+        src = (
+            "class C(Enum):\n"
+            '    """Docs."""\n'
+            "\n"
+            "    A = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    label: str\n"
+            "\n"
+            "    def a(self): ...\n"
+        )
+        self.assertEqual(
+            expect_consistent(src),
+            "class C(Enum):\n"
+            '    """Docs."""\n'
+            "\n"
+            "    A = 1\n"
+            "\n"
+            "    label: str\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    def a(self): ...\n",
+        )
+
+    def test_canonical_member_section_byte_identical(self):
+        src = (
+            "class C(Enum):\n"
+            "    RED = 1\n"
+            "\n"
+            "    label: str\n"
+            "\n"
+            "    def __new__(cls, value):\n"
+            "        return object.__new__(cls)\n"
+        )
+        self.assertEqual(reorder_source(src), src)
+
+    def test_frozen_block_keeps_odd_spacing(self):
+        src = "class C(Enum):\n    B = 1\n\n\n\n    A = 2\n"
+        self.assertEqual(reorder_source(src), src)
+
+    def test_interleaved_member_freezes_through_last_assignment(self):
+        # A member after code freezes everything up to and including it;
+        # a single-statement tail leaves the class untouched.
+        src = (
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    B = 2\n"
+            "\n"
+            "    def a(self): ...\n"
+        )
+        self.assertEqual(reorder_source(src), src)
+
+    def test_interleaved_member_bounds_the_reorder_span(self):
+        src = (
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    B = 2\n"
+            "\n"
+            "    def tail_public(self): ...\n"
+            "\n"
+            "    label: str\n"
+        )
+        out = expect_consistent(src)
+        # Frozen prefix untouched (z before B — never swapped); tail reorders.
+        self.assertLess(out.index("def z"), out.index("B = 2"))
+        self.assertLess(out.index("label: str"), out.index("def tail_public"))
+        self.assertIn("    A = 1\n", out)
+        self.assertIn("    B = 2\n", out)
+
+    def test_methods_only_enum_is_an_ordinary_member_section(self):
+        src = "class Mix(Enum):\n    def _private(self): ...\n\n    def public(self): ...\n"
+        self.assertEqual(
+            expect_consistent(src),
+            "class Mix(Enum):\n    def public(self): ...\n\n    def _private(self): ...\n",
+        )
+
+    def test_dotted_enum_base_reorders_member_section(self):
+        src = (
+            "import enum\n"
+            "\n"
+            "class C(enum.IntFlag):\n"
+            "    B = 1\n"
+            "    A = 2\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    def _hidden(self): ...\n"
+        )
+        out = expect_consistent(src)
+        self.assertLess(out.index("def z"), out.index("def _hidden"))
+        self.assertEqual(member_names(src), ["B", "A"])
+        self.assertEqual(member_names(out), ["B", "A"])
+
+    def test_non_member_tail_skips_the_class(self):
+        src = (
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    if True:\n"
+            "        x = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            "    def a(self): ...\n"
+        )
+        self.assertEqual(reorder_source(src), src)
 
 
 FIXTURES = {
@@ -339,6 +558,21 @@ FIXTURES = {
         "    middle2 = 'two'\n"
         "\n"
         "    SECOND = 2\n"
+    ),
+    "enum-member-section": (
+        "from enum import Enum\n"
+        "\n"
+        "\n"
+        "class Color(Enum):\n"
+        "    RED = 1\n"
+        "    GREEN = 2\n"
+        "\n"
+        "    def z_plain(self): ...\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def parse(raw): ...\n"
+        "\n"
+        "    label: str\n"
     ),
 }
 
