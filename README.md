@@ -78,6 +78,7 @@ crap4py tuple-signatures     # flag inline tuple annotations in function signatu
 crap4py reorder              # rewrite class bodies into canonical member order
 crap4py string-hazards       # flag escaped f-strings, regex anchors, literal-pattern anchors
 crap4py identical-branches   # flag the copy-paste-edit family inside one construct
+crap4py enum-name-contract   # flag built-in .name contracts inside enum bodies
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -178,6 +179,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `tuple-signatures [--max-fields N] [paths...]` | a function signature (parameter or return annotation) contains an inline tuple shape — `tuple[int, str]` / `typing.Tuple[...]` (bare `Tuple` counts; variadic `tuple[X, ...]` exempt; nested-in-type-args included, outermost reported); shapes with more than N (default 5) elements add an over-cap note. |
 | `string-hazards [--severity warning\|error] [paths...]` | a string literal's escaping or pattern usage contradicts the author's almost-certain intent: `{{name}}` inside an f-string while `name` is genuinely interpolated elsewhere in the same file (escaped interpolation); a string passed to the `re.compile` family whose value ends `\$` or starts `\^` (escaped regex anchor — literal dollar/caret match where the anchor was intended); or a string first argument of `str.replace`/`split`/`rsplit`/`partition`/`rpartition` starting `^` or ending `$` (anchors in a literal pattern). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 | `identical-branches [--severity warning\|error] [paths...]` | the copy-paste-edit family — syntactically identical pieces inside one construct, compared by canonical form (whitespace/comment/parenthesis-independent, commutative operands sorted, same-operator nests flattened): duplicate conditions or branch bodies in one `if`/`elif` chain; duplicate operands in one `and`/`or` chain plus absorbed operands (`a or b and a`); identical ternary branches (`x if c else x`); duplicate positional arguments in one call (keyword arguments exempt, all-literal lists exempt, a literal never the repeat); duplicate except bodies in one `try` (exception types are semantically distinct and never compared). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
+| `enum-name-contract [--severity warning\|error] [paths...]` | a read of the built-in `.name` member inside an enum class body on a provable enum receiver: `self.name`; a bare `name` in an instance method with no local shadowing (implicit self); the enum's own constants (`RED.name` or `Color.RED.name`); loop variables iterating the enum (`for c in Color`, `for k in Color.__members__`, `for c in list(Color)`, comprehension forms); parameters annotated with the enclosing enum (`c: Color`, string spellings included). `Color.RED.name` is `"RED"` until the constant is renamed — and every persisted YAML/JSON/DB row written from it drifts with the rename; the fix is an explicit value field contracted on as `.value` (`.value` itself is never flagged; `.index` has no Python analog and is omitted). An enum declaring its own `name` attribute shadows the built-in; `staticmethod`/`classmethod` bodies have no implicit self; usages outside enum bodies are out of scope (Tier 2). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -306,6 +308,48 @@ node), and `except*` groups' bodies are compared like plain handlers.
 Severity as above (`warning` default, `--severity error` exits 2);
 ignore markers (`# ignore:identical_branches`) are honored — the gate is
 ignorable.
+
+`enum-name-contract` is the port of crap4dart's `enum_name_contract` gate
+(418f1c58dc): flags reads of the built-in `.name` member *inside enum class
+bodies* on provable enum receivers — `Color.RED.name` is `"RED"` until the
+constant is renamed, and every persisted YAML/JSON/DB row written from it
+drifts with the rename. Five receiver classes, audited inside enum bodies
+only (`Enum`/`IntEnum`/`StrEnum`/`Flag`/`IntFlag` bases, transitively
+through in-file enum subclasses):
+
+- `self.name` in an instance method (explicit self, including nested
+  functions closing over `self`);
+- a bare `name` identifier read in an instance method body with no local
+  shadowing (implicit self — params, assignments, `for`/`with`/walrus
+  targets and `except as` names all shadow);
+- the enum's own constants, bare (`RED.name`) or qualified
+  (`Color.RED.name`) — valid in static methods too;
+- loop variables iterating the enum's values/members: `for c in Color`,
+  `for k in Color.__members__`, `for c in list(Color)`, and the
+  comprehension forms;
+- parameters explicitly annotated with the enclosing enum (`c: Color`;
+  string spellings `c: "Color"` and qualified `mod.Color` included;
+  `Optional[Color]` is deliberately not provable), including parameters
+  of defs nested inside enum member bodies (registered body-wide, as
+  upstream).
+
+Host adaptations vs upstream: only `.name` is policed — Python enums have
+no built-in `.index` member (`list(Enum).index(x)` is a list method), so
+the upstream `.index` half is omitted; `.value` IS the explicit contract
+and is never flagged (fix hint in every message: contract on an explicit
+value field, `.value`); upstream's `values[i]` receiver shape has no
+common Python idiom (the `for x in` forms cover the iteration idiom).
+Guards per upstream: an enum declaring its own `name` attribute (field or
+property) shadows the built-in and is skipped; assignment and invocation
+positions are not reads (`self.name()` / `RED.name()` is a member call,
+not a `.name` read, and `x.name`'s `name` is a string attribute in
+Python's AST, structurally never an implicit-self candidate);
+`staticmethod`/`classmethod` bodies have no implicit self; usages outside
+enum bodies are Tier 2 (they need type matching) and out of scope.
+Severity as above (`warning` default — `.name` in log/display labels is
+legal, the message asks to confirm the usage is not a persisted contract;
+`--severity error` exits 2); ignore markers
+(`# ignore:enum_name_contract`) are honored — the gate is ignorable.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -458,6 +502,7 @@ _v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, thi
 | `tuple-signatures`  | `inline_record_types`| yes        | yes        |
 | `string-hazards`    | `string_hazards`     | yes        | yes        |
 | `identical-branches`| `identical_branches` | yes        | yes        |
+| `enum-name-contract`| `enum_name_contract` | yes        | yes        |
 | `file-naming`       | `file_naming`        | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -643,7 +688,7 @@ be files or directories.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error` and `identical-branches --severity error` violations, and `reorder --dry-run` when any file would change. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error` and `enum-name-contract --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 

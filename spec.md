@@ -1302,6 +1302,7 @@ scan, before printing and exit-code aggregation. Ignorable gate ids:
 | `tuple-signatures`    | `inline_record_types` | yes        | yes        |
 | `string-hazards`      | `string_hazards`      | yes        | yes        |
 | `identical-branches`  | `identical_branches`  | yes        | yes        |
+| `enum-name-contract`  | `enum_name_contract`  | yes        | yes        |
 | `file-naming`         | `file_naming`         | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -1508,4 +1509,65 @@ file (project-relative) and line of the repeated occurrence. Severity:
 error` makes violations exit `2`. This flag stands in for upstream's
 per-gate `severity` config key (§33); ignore markers
 (`# ignore:identical_branches` / `# crap:ignore`) apply per §31 (the
+gate is ignorable).
+
+## 36. `enum-name-contract`
+
+```
+crap4py enum-name-contract [paths...] [--severity warning|error]
+```
+
+The `enum_name_contract` gate (418f1c58dc — port of crap4dart's
+`enum_name_contract` gate) shall flag reads of the built-in `.name` member
+inside enum class bodies, resolved from the parsed AST only, where the
+contract value silently changes when an identifier is renamed
+(`Color.RED.name` is `"RED"` until the constant is renamed — and every
+persisted YAML/JSON/DB row written from it drifts). The audited scope
+shall be the class bodies of `Enum`/`IntEnum`/`StrEnum`/`Flag`/`IntFlag`
+subclasses, transitively through in-file enum subclasses (a class whose
+base is a known enum-family name, or a class defined in the same file
+that transitively subclasses one). A receiver is provably enum-typed when
+it is:
+
+1. `self` — `self.name` in an instance method body, including nested
+   functions closing over `self`;
+2. implicit `self` — a bare `name` identifier read in an instance method
+   body with no local shadowing of that name (implicit `self`);
+3. one of the enum's own constants, bare (`RED.name`) or qualified
+   (`Color.RED.name`), valid in static members too;
+4. a loop variable introduced by iterating the enum's values/members —
+   `for c in Color`, `for k in Color.__members__`, `for c in list(Color)`,
+   or the equivalent comprehension forms;
+5. a parameter explicitly annotated with the enclosing enum's name
+   (`c: Color`; string spellings `c: "Color"` and qualified `mod.Color`
+   spellings included; `Optional[Color]` is deliberately not provable),
+   including parameters of defs nested inside enum member bodies —
+   registered flat over the member body, as upstream.
+
+Only `.name` shall be policed: Python enums have no built-in `.index`
+member (`list(Enum).index(x)` is a list method, not a built-in), so the
+upstream `.index` half of the gate is omitted. `.value` IS the explicit
+contract and shall never be flagged; every violation message shall carry
+the fix hint to contract on an explicit value field (`.value`). The
+upstream `values[i]` index-access receiver shape has no common Python
+idiom and shall not be tracked (the `for x in` loop forms cover the
+iteration idiom).
+
+Guards: an enum declaring its own `name` attribute (an assignment or a
+method/property `def`) shadows the built-in and shall not be flagged.
+Assignment and invocation positions shall not be treated as reads
+(`x.name()` is a member call, not a `.name` read — the exclusion applies
+to every receiver class; `x.name`'s `name` is a string attribute in
+Python's AST, structurally never an implicit-self candidate; `name()` is
+a call, not a read; a Store/Del context is a binding, not a read). `staticmethod` and
+`classmethod` bodies shall have no implicit self (bare `name` there is a
+module global read, and `self` is out of scope). Usages outside enum
+class bodies are Tier 2 — they need type matching — and are out of
+scope; non-enum class bodies are likewise never audited.
+
+Severity: `warning` by default — violations are reported
+(`[WARN] file:line: message`) and the exit code is `0`; `--severity
+error` makes violations exit `2`. This flag stands in for upstream's
+per-gate `severity` config key (§33); ignore markers
+(`# ignore:enum_name_contract` / `# crap:ignore`) apply per §31 (the
 gate is ignorable).
