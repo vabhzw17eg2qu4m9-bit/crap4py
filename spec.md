@@ -1343,9 +1343,19 @@ assignment shall be reordered into the canonical order exactly like a
 class body; an enum without a member section shall come back
 byte-identical. Because Python allows interleaving, a member assignment
 appearing after code shall freeze everything up to and including itself
-(the host analog of the constants-terminator span rule). Bodies containing
-anything but member statements (`if`/`try`/nested class/bare expressions)
-shall never be reordered, nor shall members sharing a source line
+(the host analog of the constants-terminator span rule). Order dependencies
+inside a body are a documented constraint: a member that reads a bare name
+bound by an earlier member of the same body (`cr = gi` aliases, method
+defaults, decorators, annotations — the expressions Python evaluates while
+the class body runs) shall never be reordered before its binder; it shall
+be pinned to the antecedent's position (moving with its chain), and a body
+whose dependencies the partition cannot respect shall come back
+byte-identical. Reads that cannot resolve inside the body — attribute
+access, imported/module/builtin names, and anything inside a method body
+(evaluated at call time, not class-definition time) — never constrain the
+reorder. Bodies containing anything but member statements
+(`if`/`try`/nested class/bare expressions) shall never be reordered, nor
+shall members sharing a source line
 (`class A: x = 1` one-liners, semicolon lists). A file's line-ending style
 (LF or CRLF) and its trailing-newline state shall be preserved.
 
