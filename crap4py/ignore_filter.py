@@ -51,6 +51,7 @@ IGNORABLE_GATES = frozenset(
         "class_size",
         "complexity",
         "duplication",
+        "enum_name_contract",
         "file_naming",
         "identical_branches",
         "inline_record_types",

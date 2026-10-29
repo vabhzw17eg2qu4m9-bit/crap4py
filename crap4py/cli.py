@@ -40,6 +40,7 @@ _SUBCOMMANDS = (
     "reorder",
     "string-hazards",
     "identical-branches",
+    "enum-name-contract",
 )
 
 _USAGE = """\
@@ -67,6 +68,7 @@ Usage:
   crap4py reorder [-n] [p..]   Rewrite class bodies into canonical member order.
   crap4py string-hazards [p.]  Flag escaped f-strings, regex anchors, literal-pattern anchors.
   crap4py identical-branches [p.] Flag duplicate conditions/bodies/operands/args in one construct.
+  crap4py enum-name-contract [p.] Flag built-in .name contracts inside enum bodies.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -171,6 +173,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         class_size,
         complexity_gate,
         duplicates,
+        enum_name_contract,
         file_naming,
         folder_structure,
         identical_branches,
@@ -214,5 +217,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "reorder": reorder.run,
         "string-hazards": string_hazards.run,
         "identical-branches": identical_branches.run,
+        "enum-name-contract": enum_name_contract.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
