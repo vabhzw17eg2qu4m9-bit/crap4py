@@ -404,6 +404,31 @@ class EnumMemberSectionTest(unittest.TestCase):
             "    def a(self): ...\n",
         )
 
+    def test_annassign_with_value_is_a_frozen_member(self):
+        # `label: str = "L"` creates an enum member, so the frozen span
+        # extends through it: methods above it never swap around it and it is
+        # never hoisted into the reorderable section (pins the
+        # AnnAssign-with-value branch of _is_member_assignment).
+        src = (
+            "from enum import Enum\n"
+            "\n"
+            "\n"
+            "class C(Enum):\n"
+            "    A = 1\n"
+            "\n"
+            "    def z(self): ...\n"
+            "\n"
+            '    label: str = "L"\n'
+            "\n"
+            "    def b(self): ...\n"
+            "\n"
+            "    def a(self): ...\n"
+        )
+        out = expect_consistent(src)
+        self.assertLess(out.index("def z"), out.index('label: str = "L"'))
+        self.assertLess(out.index("def b"), out.index("def a"))
+        self.assertEqual(member_names(out), ["A", "label"])
+
     def test_canonical_member_section_byte_identical(self):
         src = (
             "class C(Enum):\n"
@@ -494,6 +519,118 @@ class EnumMemberSectionTest(unittest.TestCase):
         self.assertEqual(reorder_source(src), src)
 
 
+class OrderDependencyTest(unittest.TestCase):
+    """Class bodies execute top-down: a member reading a bare name bound by an
+    earlier member of the same body must never run before its binder after
+    reorder (found by dogfood: ``visit_TryStar = visit_Try`` was hoisted out
+    of the attrs bucket above ``visit_Try`` — NameError at import). Reads
+    that never resolve inside the body (attributes, imported names, method
+    bodies) never pin."""
+
+    ALIAS = "class Grid:\n    gi = property(lambda self: 42)\n\n    CR = gi\n\n    X = 1\n"
+
+    def test_corruption_repro_alias_stays_after_binder_and_execs(self):
+        out = expect_consistent(self.ALIAS)
+        # X hoists (constants first); the alias rides with its antecedent.
+        self.assertLess(out.index("X = 1"), out.index("gi = property"))
+        self.assertLess(out.index("gi = property"), out.index("CR = gi"))
+        namespace: dict[str, object] = {}
+        exec(out, namespace)  # the corruption was a NameError right here
+        self.assertIsInstance(namespace["Grid"].CR, property)
+
+    def test_transitive_alias_chain_keeps_source_order(self):
+        src = (
+            "class C:\n"
+            "    gi = property(lambda self: 1)\n"
+            "\n"
+            "    CR = gi\n"
+            "\n"
+            "    CR2 = CR\n"
+            "\n"
+            "    X = 1\n"
+        )
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("gi = property"))
+        self.assertLess(out.index("gi = property"), out.index("CR = gi"))
+        self.assertLess(out.index("CR = gi"), out.index("CR2 = CR"))
+        exec(out, {})
+
+    def test_alias_of_imported_name_moves_freely(self):
+        src = "from os import name\n\n\nclass C:\n    alias = name\n\n    X = 1\n"
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("alias = name"))
+        exec(out, {})
+
+    def test_property_alias_pins_across_buckets(self):
+        # `prop` (attrs bucket) reads `_get` (private bucket): it is pinned to
+        # its antecedent's key and moves with it instead of being hoisted.
+        src = "class C:\n    def _get(self): ...\n\n    prop = property(_get)\n\n    X = 1\n"
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("def _get"))
+        self.assertLess(out.index("def _get"), out.index("prop = property(_get)"))
+        exec(out, {})
+
+    def test_method_default_reading_class_attr_stays_after_it(self):
+        src = "class C:\n    timeout = 5\n\n    X = 1\n\n    def wait(self, t=timeout): ...\n"
+        out = expect_consistent(src)
+        self.assertLess(out.index("timeout = 5"), out.index("def wait"))
+        exec(out, {})
+
+    def test_annotations_defaults_decorators_all_count_as_reads(self):
+        # Everything Python evaluates while the class body runs — decorators,
+        # positional/kwonly defaults, every annotation flavor — goes through
+        # the dependency scan (posonly/vararg/kwarg/return paths included).
+        src = (
+            "class C:\n"
+            "    def m(self, a, /, *args: int, k=None, **kw: int) -> int: ...\n"
+            "\n"
+            "    X = 1\n"
+        )
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("def m"))
+        exec(out, {})
+
+    def test_method_body_reads_never_pin(self):
+        # Method bodies run at call time — `s` reading `pub` is not a
+        # class-body dependency, so `s` still hoists to the static bucket
+        # (walking bodies would pin `s` after `pub` and change the output).
+        src = (
+            "class C:\n"
+            "    def pub(self): ...\n"
+            "\n"
+            "    @staticmethod\n"
+            "    def s():\n"
+            "        return pub()\n"
+            "\n"
+            "    X = 1\n"
+        )
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("def pub"))
+        self.assertLess(out.index("def s"), out.index("def pub"))
+
+    def test_attribute_reads_never_pin(self):
+        # `obj.attr` reads `obj` (module-level), not the body-bound `attr`.
+        src = "class C:\n    q = obj.attr\n\n    attr = 1\n\n    X = 1\n"
+        out = expect_consistent(src)
+        self.assertLess(out.index("X = 1"), out.index("q = obj.attr"))
+        self.assertLess(out.index("q = obj.attr"), out.index("attr = 1"))
+
+    def test_diamond_read_across_buckets_leaves_class_alone(self):
+        # `CR` reads two binders the partition would split around it — the
+        # only safe transform is no transform.
+        src = (
+            "class D:\n"
+            "    gi = property(lambda self: 1)\n"
+            "\n"
+            "    gi2 = property(lambda self: 2)\n"
+            "\n"
+            "    CR = (gi, gi2)\n"
+            "\n"
+            "    X = 1\n"
+        )
+        self.assertEqual(reorder_source(src), src)
+
+
 FIXTURES = {
     "kitchen-sink": (
         '"""A documented module."""\n'
@@ -573,6 +710,9 @@ FIXTURES = {
         "    def parse(raw): ...\n"
         "\n"
         "    label: str\n"
+    ),
+    "alias-order": (
+        "class Grid:\n    gi = property(lambda self: 42)\n\n    CR = gi\n\n    X = 1\n"
     ),
 }
 

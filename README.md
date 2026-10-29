@@ -682,6 +682,17 @@ class/bare expressions — their order may be semantic), members sharing a
 source line (`class A: x = 1` one-liners, semicolon lists — no safe slice
 points).
 
+Order dependencies inside a body are preserved. Class bodies execute
+top-down, so a member that reads a bare name bound by an earlier member of
+the same body (`cr = gi` aliases, `def m(v=x)` defaults, decorators,
+annotations) is pinned to its antecedent's position — it moves with the
+antecedent's chain, never before it — and a body whose dependencies the
+partition cannot respect (a read spanning two antecedents in different
+buckets, re-bound names) comes back byte-identical. Reads that cannot
+resolve inside the body never constrain the reorder: attribute access
+(`self.x`, `Other.x`), imported/module/builtin names, and anything inside a
+method body (evaluated at call time, not class-definition time).
+
 Deterministic: same input, same output; already-canonical bodies are left
 byte-identical whatever their layout; `fix(fix(x)) == fix(x)`. With
 `--dry-run` nothing is written, files that would change are listed, and the

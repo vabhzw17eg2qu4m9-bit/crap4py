@@ -34,6 +34,16 @@ bodies containing anything but members (``if``/``try``/nested class/bare
 expressions), members sharing a source line
 (``class A: x = 1`` one-liners, semicolon lists).
 
+Order dependencies inside a body are preserved: class bodies execute
+top-down, so a member that reads a bare name bound by an earlier member of
+the SAME body (``cr = gi`` aliases, ``def m(v=x)`` defaults, decorators,
+annotations) must not run before its binder. Such a member is pinned to its
+antecedent's sort key (it moves with the antecedent's chain); when even the
+pinned partition cannot keep every read after its binder, the whole body is
+left untouched. Reads that never resolve inside the body — attribute access
+(``self.x``, ``Other.x``), imported/module/builtin names, and anything
+inside a method body (deferred until call) — never pin.
+
 Deterministic: same input, same output; already-canonical bodies are left
 byte-identical (the span is rewritten only when the category sequence
 changes); ``fix(fix(x)) == fix(x)``; the file's line-ending style (LF/CRLF)
@@ -63,12 +73,18 @@ _MEMBER_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssig
 
 @dataclass(frozen=True, slots=True)
 class _Slice:
-    """One member's source span plus its stable-partition sort keys."""
+    """One member's source span plus its stable-partition sort keys.
+
+    ``deps`` holds the indices of earlier members binding bare names this
+    member reads while the class body runs (``cr = gi`` aliases, defaults,
+    decorators) — they pin its sort key so it never runs before them.
+    """
 
     category: int
     index: int
     start: int
     end: int
+    deps: tuple[int, ...] = ()
 
 
 def reorder_source(source: str) -> str:
@@ -168,15 +184,36 @@ def _class_replacement(
     slices = _member_slices(node, offsets, lines)
     if slices is None:
         return None
-    ordered = sorted(slices, key=lambda s: (s.category, s.index))
-    if all(s.index == i for i, s in enumerate(ordered)):
-        return None  # already canonical: byte-identical whatever the layout
+    ordered = _ordered_slices(slices)
+    if ordered is None or all(s.index == i for i, s in enumerate(ordered)):
+        return None  # unpartitionable, or already canonical (byte-identical)
     texts = [source[s.start : s.end] for s in ordered]
     source_last = source[slices[-1].start : slices[-1].end]
     ending = source_last[len(source_last.rstrip("\r\n")) :]  # keep EOF newline style
     separator = "\r\n\r\n" if "\r\n" in source else "\n\n"
     body = separator.join(text.rstrip("\r\n") for text in texts) + ending
     return slices[0].start, slices[-1].end, body
+
+
+def _ordered_slices(slices: list[_Slice]) -> list[_Slice] | None:
+    """Stable-partition order with order-dependent members pinned to their
+    antecedent chain, or None when no safe partition exists.
+
+    A member reading a bare name bound earlier in the same body takes its
+    earliest antecedent's sort key when its own would sort later (equal keys
+    keep source order, so the read stays after its binder). If any read
+    would still run before its binder (diamond reads across buckets, re-bound
+    names), the body cannot be safely partitioned.
+    """
+    keys = {s.index: (s.category, s.index) for s in slices}
+    for s in slices:  # source order: every dep points at an already-keyed member
+        if s.deps:
+            keys[s.index] = max(keys[s.index], min(map(keys.__getitem__, s.deps)))
+    ordered = sorted(slices, key=lambda s: keys[s.index])
+    position = {s.index: p for p, s in enumerate(ordered)}
+    if any(position[d] > position[s.index] for s in slices for d in s.deps):
+        return None  # a read would still run before its binder — never move it
+    return ordered
 
 
 def _member_slices(node: ast.ClassDef, offsets: list[int], lines: list[str]) -> list[_Slice] | None:
@@ -186,15 +223,81 @@ def _member_slices(node: ast.ClassDef, offsets: list[int], lines: list[str]) -> 
         return None
     members, boundary = layout
     claims = _claim_lines(members, boundary, lines)
+    deps = _dependency_edges(members)
     return [
         _Slice(
             _category(member),
             i,
             offsets[claims[i]],
             offsets[claims[i + 1]] if i + 1 < len(members) else offsets[member.end_lineno],
+            tuple(sorted(deps[i])),
         )
         for i, member in enumerate(members)
     ]
+
+
+def _dependency_edges(members: list[ast.stmt]) -> list[frozenset[int]]:
+    """Per member, the indices of earlier members binding a bare name it reads
+    while the class body runs. A name bound by several members edges to every
+    binder (re-binding is order-sensitive too); names bound later or never
+    (imports, builtins, method bodies) create no edge."""
+    edges: list[frozenset[int]] = []
+    binders: dict[str, list[int]] = {}
+    for i, member in enumerate(members):
+        reads, binds = _class_scope(member)
+        edges.append(frozenset(j for name in reads for j in binders.get(name, ())))
+        for name in binds:
+            binders.setdefault(name, []).append(i)
+    return edges
+
+
+def _class_scope(stmt: ast.stmt) -> tuple[frozenset[str], frozenset[str]]:
+    """Bare names a member (reads, binds) while the class body executes.
+
+    Only class-body-time expressions count — see :func:`_method_exec_parts`
+    and :func:`_assignment_parts`. A def's name binds like a target.
+    # ponytail: comprehension loop/walrus vars count as binds — over-pinning
+    # is conservative (freezes or refuses), never corrupting.
+    """
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        reads, binds = _names_in(_method_exec_parts(stmt))
+        return reads, binds | {stmt.name}
+    return _names_in(_assignment_parts(stmt))
+
+
+def _method_exec_parts(stmt: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    """The parts of a def Python evaluates while the class body runs:
+    decorators, argument defaults, and annotations. The body itself runs at
+    call time and cannot read the namespace being built."""
+    args = stmt.args
+    params = (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+    return [
+        *stmt.decorator_list,
+        *args.defaults,
+        *(d for d in args.kw_defaults if d is not None),
+        *(p.annotation for p in params if p is not None and p.annotation),
+        *([stmt.returns] if stmt.returns else []),
+    ]
+
+
+def _assignment_parts(stmt: ast.stmt) -> list[ast.expr]:
+    """Targets plus value/annotation of an Assign/AnnAssign. Targets count:
+    ``obj.attr = 1`` reads ``obj``; ``x = 1`` binds ``x``."""
+    if isinstance(stmt, ast.AnnAssign):
+        return [stmt.target, stmt.annotation, *([stmt.value] if stmt.value is not None else [])]
+    return [stmt.value, *stmt.targets]
+
+
+def _names_in(parts: list[ast.expr]) -> tuple[frozenset[str], frozenset[str]]:
+    """(reads, binds) over the bare names in ``parts`` — ``ast.Name`` context
+    separates reads (Load) from binds (Store, including walrus targets)."""
+    reads: set[str] = set()
+    binds: set[str] = set()
+    for part in parts:
+        for node in ast.walk(part):
+            if isinstance(node, ast.Name):
+                (binds if isinstance(node.ctx, ast.Store) else reads).add(node.id)
+    return frozenset(reads), frozenset(binds)
 
 
 def _reorderable_members(node: ast.ClassDef) -> tuple[list[ast.stmt], int] | None:
