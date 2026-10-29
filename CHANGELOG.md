@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.26.0...v0.27.0) (2026-10-29)
+
+
+### Features
+
+* **gate:** enum-name-contract — .name contract inside enum bodies (adapted from upstream 418f1c58dc) ([#68](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/68)) ([d4db659](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/d4db65944eaae5706fcc21b185ad31e6f022ae22))
+
 ## [0.26.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.25.0...v0.26.0) (2026-10-28)
 
 
