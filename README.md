@@ -79,6 +79,7 @@ crap4py reorder              # rewrite class bodies into canonical member order
 crap4py string-hazards       # flag escaped f-strings, regex anchors, literal-pattern anchors
 crap4py identical-branches   # flag the copy-paste-edit family inside one construct
 crap4py enum-name-contract   # flag built-in .name contracts inside enum bodies
+crap4py collapsible-flow     # flag collapsible nested ifs and redundant/flattenable else chains
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -180,6 +181,7 @@ All exit `2` iff violations, `1` on usage errors.
 | `string-hazards [--severity warning\|error] [paths...]` | a string literal's escaping or pattern usage contradicts the author's almost-certain intent: `{{name}}` inside an f-string while `name` is genuinely interpolated elsewhere in the same file (escaped interpolation); a string passed to the `re.compile` family whose value ends `\$` or starts `\^` (escaped regex anchor — literal dollar/caret match where the anchor was intended); or a string first argument of `str.replace`/`split`/`rsplit`/`partition`/`rpartition` starting `^` or ending `$` (anchors in a literal pattern). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 | `identical-branches [--severity warning\|error] [paths...]` | the copy-paste-edit family — syntactically identical pieces inside one construct, compared by canonical form (whitespace/comment/parenthesis-independent, commutative operands sorted, same-operator nests flattened): duplicate conditions or branch bodies in one `if`/`elif` chain; duplicate operands in one `and`/`or` chain plus absorbed operands (`a or b and a`); identical ternary branches (`x if c else x`); duplicate positional arguments in one call (keyword arguments exempt, all-literal lists exempt, a literal never the repeat); duplicate except bodies in one `try` (exception types are semantically distinct and never compared). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 | `enum-name-contract [--severity warning\|error] [paths...]` | a read of the built-in `.name` member inside an enum class body on a provable enum receiver: `self.name`; a bare `name` in an instance method with no local shadowing (implicit self); the enum's own constants (`RED.name` or `Color.RED.name`); loop variables iterating the enum (`for c in Color`, `for k in Color.__members__`, `for c in list(Color)`, comprehension forms); parameters annotated with the enclosing enum (`c: Color`, string spellings included). `Color.RED.name` is `"RED"` until the constant is renamed — and every persisted YAML/JSON/DB row written from it drifts with the rename; the fix is an explicit value field contracted on as `.value` (`.value` itself is never flagged; `.index` has no Python analog and is omitted). An enum declaring its own `name` attribute shadows the built-in; `staticmethod`/`classmethod` bodies have no implicit self; usages outside enum bodies are out of scope (Tier 2). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
+| `collapsible-flow [--severity warning\|error] [paths...]` | control-flow nesting a semantics-preserving mechanical rewrite can flatten: a nested `if a:` / `if b:` with no `else` on either level merges into `if a and b:` (`and` short-circuits, so order is preserved); a redundant `else` after an always-exiting then-suite (`return`/`raise`/bare `raise`/`break`/`continue`, an if/else pair whose both branches exit, a `try` whose body exits and whose `finally` is absent, `pass`-only, or exiting) dedents away (an `elif` link's else nests under the enclosing `else` first — a bare dedent would escape its scope); an `elif` after a terminal then is a flattening hint (guard sequence or dispatch table — not a mechanical rewrite, so no fix-shaped message). An inner `if` without an `else` never counts as exiting (it falls through — dedenting would change behavior); `match` bodies are never exit-analyzed (as upstream's `switch`) but still scanned. Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -350,6 +352,40 @@ Severity as above (`warning` default — `.name` in log/display labels is
 legal, the message asks to confirm the usage is not a persisted contract;
 `--severity error` exits 2); ignore markers
 (`# ignore:enum_name_contract`) are honored — the gate is ignorable.
+
+`collapsible-flow` is the port of crap4dart's `collapsible_flow` gate
+(7bdfd64ae1): flags control-flow nesting a semantics-preserving
+mechanical rewrite can flatten. Three checks:
+
+- collapsible if — `if a:` whose suite holds only an inner `if` with no
+  `else` on either level merges into `if a and b:` (Python's `and`
+  short-circuits, so evaluation order is preserved and the merge is
+  always equivalent; a Python `if` has no pattern condition to block a
+  merge — `match` is a separate statement);
+- redundant else — the then-suite always exits (`return`, `raise` —
+  bare `raise` is the rethrow, same AST node — `break`, `continue`,
+  an if/else pair whose both branches exit, or a `try` whose body exits
+  and whose `finally` is absent, a lone `pass`, or exits): the `else`
+  dedents away. The hard-learned upstream rule holds: an inner `if`
+  WITHOUT an `else` never counts as exiting — control falls through
+  when its condition is false, so dedenting would change behavior. One
+  py-specific hint split: a redundant else on an *elif link* says to
+  nest the chain under the enclosing `else` first — with no braces, a
+  bare dedent of the link's body would escape the head's else scope and
+  run after earlier falling-through branches (head-level and
+  then-nested else bodies dedent safely and keep the upstream hint);
+- chain after terminal then — an `elif` (an `if` in the head's
+  `orelse`; Python has no elif node) after an always-exiting then is a
+  flattening hint (guard sequence or dispatch table), no fix-shaped
+  message — that rewrite is not mechanical.
+
+`except` handlers are not analyzed (as upstream, body + `finally`
+decide); `match` bodies are never exit-analyzed (pattern fall-through
+semantics, as upstream's `switch`) but are still scanned — a collapsible
+if inside a `case` suite is flagged like any other. Severity as above
+(`warning` default — the flagged code is correct, this gate trades
+flatness, not bugs; `--severity error` exits 2); ignore markers
+(`# ignore:collapsible_flow`) are honored — the gate is ignorable.
 
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
@@ -707,7 +743,7 @@ be files or directories.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
 | `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error` and `enum-name-contract --severity error` violations, and `reorder --dry-run` when any file would change. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error`, `enum-name-contract --severity error` and `collapsible-flow --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 

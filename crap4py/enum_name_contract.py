@@ -360,9 +360,12 @@ def _enum_loop_vars(fn, enum_name: str) -> frozenset[str]:
     """Loop variables iterating the enum's values/members, loops and comprehensions."""
     out: set[str] = set()
     for node in ast.walk(fn):
-        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            if isinstance(node.target, ast.Name) and _is_enum_iterable(node.iter, enum_name):
-                out.add(node.target.id)
+        if (
+            isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension))
+            and isinstance(node.target, ast.Name)
+            and _is_enum_iterable(node.iter, enum_name)
+        ):
+            out.add(node.target.id)
     return frozenset(out)
 
 

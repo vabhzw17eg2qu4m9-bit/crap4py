@@ -41,6 +41,7 @@ _SUBCOMMANDS = (
     "string-hazards",
     "identical-branches",
     "enum-name-contract",
+    "collapsible-flow",
 )
 
 _USAGE = """\
@@ -69,6 +70,7 @@ Usage:
   crap4py string-hazards [p.]  Flag escaped f-strings, regex anchors, literal-pattern anchors.
   crap4py identical-branches [p.] Flag duplicate conditions/bodies/operands/args in one construct.
   crap4py enum-name-contract [p.] Flag built-in .name contracts inside enum bodies.
+  crap4py collapsible-flow [p.]  Flag nested ifs to merge and redundant/flattenable else chains.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -171,6 +173,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
     from . import (
         banned_imports,
         class_size,
+        collapsible_flow,
         complexity_gate,
         duplicates,
         enum_name_contract,
@@ -218,5 +221,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "string-hazards": string_hazards.run,
         "identical-branches": identical_branches.run,
         "enum-name-contract": enum_name_contract.run,
+        "collapsible-flow": collapsible_flow.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)
