@@ -1618,7 +1618,11 @@ parsed AST only. Three checks:
    falls through when its condition is false); `match` bodies shall not
    be analyzed for exits (pattern fall-through semantics, as upstream's
    `switch`), and `except` handlers shall not be analyzed (as upstream,
-   only the body and the `finally` decide).
+   only the body and the `finally` decide). A redundant else on an
+   `elif` link shall carry the nest-first hint (nest the chain under the
+   enclosing `else`, then dedent within it): Python has no braces, so a
+   bare dedent of the link's else body would escape the head's else
+   scope and run after earlier falling-through branches.
 3. **Chain after terminal then** — an `elif` (Python has no elif AST
    node: an `if` in the head's `orelse`) following an always-exiting
    then-suite, flagged as a flattening hint (guard sequence or dispatch

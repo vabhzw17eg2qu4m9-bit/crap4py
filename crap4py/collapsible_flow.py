@@ -26,6 +26,13 @@ from the parsed AST only:
    that rewrite is not mechanical, so this check only points at it (no
    fix-shaped message).
 
+Python specifics beyond the upstream mapping: a redundant else on an
+*elif link* (the link's own then exits, its else is plain) must not
+bare-dedent — with no braces, the body would leave the head's else scope
+and run after earlier falling-through branches — so its hint says to
+nest the chain under the enclosing else first; a head-level or
+then-nested redundant else dedents safely and keeps the upstream hint.
+
 Every finding is correct code — this gate trades flatness, not bugs. Default
 severity is ``warning``: findings are reported ``[WARN]`` but do not fail the
 run; ``--severity error`` fails with exit 2, matching upstream's per-gate
@@ -113,16 +120,30 @@ def check_files(files: Iterable[PathLike], project_root: PathLike) -> Collapsibl
 
 def file_violations(tree: ast.Module, relative: str) -> CollapsibleFlowResult:
     """All collapsible-flow findings of one parsed file."""
-    scanner = _Scanner(relative)
+    scanner = _Scanner(relative, tree)
     scanner.visit(tree)
     return CollapsibleFlowResult(scanner.violations, scanner.constructs)
+
+
+def _elif_links(tree: ast.Module) -> set[int]:
+    """id()s of ``If`` nodes that extend a chain — Python has no elif node,
+    a link is the lone ``If`` in a head's ``orelse`` (the pattern
+    ``identical_branches`` uses). A link's redundant else must not
+    bare-dedent: with no braces, the body would leave the head's else
+    scope entirely."""
+    return {
+        id(node.orelse[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If)
+    }
 
 
 class _Scanner(ast.NodeVisitor):
     """Collects the collapsible-flow family over one file's AST."""
 
-    def __init__(self, file: str) -> None:
+    def __init__(self, file: str, tree: ast.Module) -> None:
         self._file = file
+        self._elif_links = _elif_links(tree)
         self.violations: list[FlowFinding] = []
         self.constructs = 0
 
@@ -155,6 +176,15 @@ class _Scanner(ast.NodeVisitor):
                 node.orelse[0],
                 "else-if follows an always-exiting then branch — flatten the "
                 "chain into guard clauses or a dispatch table",
+            )
+        elif id(node) in self._elif_links:
+            # Python has no braces: bare-dedenting an elif link's else body
+            # escapes the head's else scope when an earlier branch falls
+            # through — nest the chain first, then dedent within it.
+            self._add(
+                node,
+                "redundant else after an always-exiting then branch — nest "
+                "the chain under the enclosing else and dedent the else body",
             )
         else:
             self._add(

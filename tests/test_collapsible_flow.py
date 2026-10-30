@@ -164,6 +164,41 @@ class RedundantElseTest(unittest.TestCase):
         self.assertIn("redundant else after an always-exiting then branch", msg)
         self.assertIn("dedent", msg)
 
+    def test_elif_link_else_hints_nest_not_bare_dedent(self):
+        # The js lane's dogfood trap, py flavor: no braces, so a bare
+        # dedent of the link's else body escapes the head's else scope
+        # when the earlier branch falls through — the hint must say nest.
+        ((line, msg),) = _violations(
+            """
+            def f(c, d):
+                if c:
+                    print('c')
+                elif d:
+                    raise ValueError
+                else:
+                    fallback()
+            """
+        )
+        self.assertEqual(line, 4)
+        self.assertIn("redundant else", msg)
+        self.assertIn("nest the chain under the enclosing else", msg)
+
+    def test_head_level_else_keeps_the_bare_dedent_hint(self):
+        # A head's own else (no earlier falling-through branch in the
+        # chain) dedents safely: the then exits, so falling past it means
+        # the else's condition held.
+        ((line, msg),) = _violations(
+            """
+            def f(c):
+                if c:
+                    return 'a'
+                else:
+                    return 'b'
+            """
+        )
+        self.assertEqual(line, 2)
+        self.assertIn("— dedent the else body", msg)
+
     def test_break_continue_raise_and_bare_raise_count_as_exiting(self):
         cases = [
             (
