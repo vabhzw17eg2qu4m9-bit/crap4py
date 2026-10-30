@@ -49,6 +49,7 @@ IGNORABLE_GATES = frozenset(
     {
         "banned_imports",
         "class_size",
+        "collapsible_flow",
         "complexity",
         "duplication",
         "enum_name_contract",

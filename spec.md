@@ -1303,6 +1303,7 @@ scan, before printing and exit-code aggregation. Ignorable gate ids:
 | `string-hazards`      | `string_hazards`      | yes        | yes        |
 | `identical-branches`  | `identical_branches`  | yes        | yes        |
 | `enum-name-contract`  | `enum_name_contract`  | yes        | yes        |
+| `collapsible-flow`    | `collapsible_flow`    | yes        | yes        |
 | `file-naming`         | `file_naming`         | — (no line)| yes        |
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
@@ -1588,3 +1589,49 @@ error` makes violations exit `2`. This flag stands in for upstream's
 per-gate `severity` config key (§33); ignore markers
 (`# ignore:enum_name_contract` / `# crap:ignore`) apply per §31 (the
 gate is ignorable).
+
+## 37. `collapsible-flow`
+
+```
+crap4py collapsible-flow [paths...] [--severity warning|error]
+```
+
+The `collapsible_flow` gate (7bdfd64ae1 — port of crap4dart's
+`collapsible_flow` gate) shall flag control-flow nesting that a
+semantics-preserving mechanical rewrite can flatten, resolved from the
+parsed AST only. Three checks:
+
+1. **Collapsible if** — an `if` without `else` whose suite holds only
+   one statement that is itself an `if` without `else`. The two
+   conditions merge into a single `and` condition; Python's `and`
+   short-circuits, so evaluation order is preserved and the merge is
+   always equivalent (including `await`ed or side-effecting
+   conditions). A Python `if` has no pattern condition to block a
+   merge — `match` is a separate statement and is never merged.
+2. **Redundant else** — an `if`/`else` whose then-suite always exits:
+   ends with `return`, `raise` (bare `raise` = rethrow — the same AST
+   node as `raise X`), `break`, `continue`, an `if`/`else` pair whose
+   both branches exit, or a `try`/`try*` whose body exits and whose
+   `finally` is absent, a lone `pass` (Python cannot write an empty
+   suite), or exits. The `else` is redundant and its body dedents. An
+   inner `if` without an `else` shall never count as exiting (control
+   falls through when its condition is false); `match` bodies shall not
+   be analyzed for exits (pattern fall-through semantics, as upstream's
+   `switch`), and `except` handlers shall not be analyzed (as upstream,
+   only the body and the `finally` decide).
+3. **Chain after terminal then** — an `elif` (Python has no elif AST
+   node: an `if` in the head's `orelse`) following an always-exiting
+   then-suite, flagged as a flattening hint (guard sequence or dispatch
+   table); the rewrite is not mechanical, so the message shall not
+   promise a specific fix.
+
+`match` bodies are still visited: a collapsible if inside a `case`
+suite is flagged like any other.
+
+Default severity: `warning` — violations are reported
+(`[WARN] file:line: message`) and the exit code is `0`; `--severity
+error` makes violations exit `2`. This flag stands in for upstream's
+per-gate `severity` config key (§33); ignore markers
+(`# ignore:collapsible_flow` / `# crap:ignore`) apply per §31 (the
+gate is ignorable). Every violation shall carry the file and line of
+the offending construct.

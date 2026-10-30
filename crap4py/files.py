@@ -11,7 +11,17 @@ from pathlib import Path
 PathLike = str | Path
 
 _EXCLUDE_DIRS = frozenset(
-    {"__pycache__", ".venv", "venv", "build", "dist", "site-packages", ".git"}
+    {
+        "__pycache__",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        "site-packages",
+        ".git",
+        ".uvcache",
+        ".uvpython",
+    }
 )
 _TEST_DIRS = frozenset({"test", "tests"})
 

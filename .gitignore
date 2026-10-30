@@ -7,6 +7,8 @@ build/
 dist/
 .venv/
 venv/
+.uvcache/
+.uvpython/
 .coverage
 /coverage.json
 .pytest_cache/
