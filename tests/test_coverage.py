@@ -1,10 +1,19 @@
-"""Unit tests for coverage.py JSON parsing and method attribution."""
+"""Unit tests for coverage.py JSON/lcov parsing and method attribution."""
 
 import io
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from crap4py.coverage import coverage_for_method, load_coverage, parse_coverage_dict
+from crap4py.coverage import (
+    FileCoverage,
+    coverage_for_method,
+    load_coverage,
+    load_coverage_records,
+    parse_coverage_dict,
+    parse_lcov,
+)
 
 
 class CoverageAttributionTest(unittest.TestCase):
@@ -78,6 +87,76 @@ class CoverageParsingTest(unittest.TestCase):
         self.assertIn("not found", captured)
         self.assertIn("Hint: generate coverage first", captured)
         self.assertIn("coverage run -m pytest && coverage json", captured)
+
+
+class LcovParsingTest(unittest.TestCase):
+    def test_parse_lcov_matches_native_format(self):
+        lcov = "SF:a.py\nDA:1,1\nDA:2,0\nDA:3,1\nend_of_record\n"
+        expected = parse_coverage_dict(
+            {"files": {"a.py": {"executed_lines": [1, 3], "missing_lines": [2]}}}
+        )
+        self.assertEqual(parse_lcov(lcov), expected)
+
+    def test_parse_lcov_relative_sf_resolved_against_root(self):
+        cov = parse_lcov("SF:src/a.py\nDA:1,1\nDA:2,0\nend_of_record\n", project_root="/tmp/proj")
+        self.assertEqual(cov.get("src/a.py"), FileCoverage(executed_lines={1}, missing_lines={2}))
+
+    def test_parse_lcov_absolute_sf_relativized(self):
+        cov = parse_lcov("SF:/tmp/proj/a.py\nDA:1,0\nend_of_record\n", project_root="/tmp/proj")
+        self.assertIn("a.py", cov)
+        self.assertNotIn("/tmp/proj/a.py", cov)
+
+    def test_parse_lcov_sf_outside_root_kept_as_is(self):
+        cov = parse_lcov("SF:/other/a.py\nDA:1,1\nend_of_record\n", project_root="/tmp/proj")
+        self.assertIn("/other/a.py", cov)
+
+    def test_parse_lcov_sums_duplicate_sf_records(self):
+        lcov = "SF:a.py\nDA:1,2\nDA:2,0\nend_of_record\nSF:a.py\nDA:1,0\nDA:2,3\nend_of_record\n"
+        cov = parse_lcov(lcov)
+        self.assertEqual(cov["a.py"].executed_lines, {1, 2})
+        self.assertEqual(cov["a.py"].missing_lines, set())
+
+    def test_parse_lcov_separate_files(self):
+        lcov = "SF:a.py\nDA:1,1\nend_of_record\nSF:b.py\nDA:1,0\nend_of_record\n"
+        cov = parse_lcov(lcov)
+        self.assertEqual(cov["a.py"].executed_lines, {1})
+        self.assertEqual(cov["b.py"].missing_lines, {1})
+
+    def test_parse_lcov_crlf_line_endings(self):
+        lcov = "SF:a.py\r\nDA:1,1\r\nDA:2,0\r\nend_of_record\r\n"
+        cov = parse_lcov(lcov)
+        self.assertEqual(cov["a.py"].executed_lines, {1})
+        self.assertEqual(cov["a.py"].missing_lines, {2})
+
+    def test_parse_lcov_ignores_function_and_branch_records(self):
+        lcov = (
+            "TN:test\nSF:a.py\nFN:1,5,some_fn\nFNDA:1,some_fn\nFNF:1\nFNH:1\n"
+            "BRDA:1,0,0,1\nBRF:1\nBRH:1\nLF:2\nLH:1\nDA:1,1\nDA:2,0\nend_of_record\n"
+        )
+        cov = parse_lcov(lcov)
+        self.assertEqual(cov, {"a.py": FileCoverage(executed_lines={1}, missing_lines={2})})
+
+    def test_parse_lcov_malformed_da_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            parse_lcov("SF:a.py\nDA:x,y\nend_of_record\n")
+
+    def test_parse_lcov_da_without_hits_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            parse_lcov("SF:a.py\nDA:5\nend_of_record\n")
+
+    def test_parse_lcov_da_before_sf_ignored(self):
+        self.assertEqual(parse_lcov("DA:1,1\nSF:a.py\nend_of_record\n"), {})
+
+    def test_load_coverage_dispatches_info_suffix_to_lcov(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = Path(tmp) / "coverage.info"
+            info.write_text("SF:a.py\nDA:1,1\nDA:2,0\nend_of_record\n")
+            cov = load_coverage(info)
+        self.assertEqual(cov, {"a.py": FileCoverage(executed_lines={1}, missing_lines={2})})
+
+    def test_load_coverage_records_missing_raises(self):
+        with self.assertRaises(OSError):
+            load_coverage_records("/nonexistent/path/coverage.info")
 
 
 if __name__ == "__main__":

@@ -907,15 +907,20 @@ def parse_changed_lines(diff_output: str) -> dict[str, set[int]]:
     return added
 
 
-def load_changed_lines(project_root: Path, base: str) -> dict[str, set[int]] | None:
+def load_changed_lines(
+    project_root: Path, base: str, paths: Iterable[str] | None = None
+) -> dict[str, set[int]] | None:
     """Changed lines vs ``base`` via fixed-argv ``git diff`` (no shell).
 
     Returns ``None`` on any git failure (unknown ref, not a repository) —
     the caller reports it and exits with a usage error, mirroring
-    upstream's ``_loadDiff``.
+    upstream's ``_loadDiff``. ``paths`` restricts the diff to explicit
+    pathspecs (the CRAP command's ``--diff-base <ref> <paths>``); the
+    default ``*.py`` matches the mutation gate's scope.
     """
+    pathspec = ["*.py"] if paths is None else list(paths)
     proc = subprocess.run(
-        ["git", "diff", "--unified=0", base, "--", "*.py"],
+        ["git", "diff", "--unified=0", base, "--", *pathspec],
         cwd=project_root,
         capture_output=True,
         text=True,

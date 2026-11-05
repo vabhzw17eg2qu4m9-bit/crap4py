@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
-from .analyzer import analyze
+from .analyzer import _relative_to_root, analyze
 from .args import UsageErrorParser
 from .constants import DEFAULT_COVERAGE
+from .coverage import load_coverage_records
 from .files import changed_files, expand_paths, find_source_files
+from .mutation import load_changed_lines
 from .report import format_report
 from .runtests import run_tests
 
@@ -49,6 +52,7 @@ Usage:
   crap4py                      Analyze all Python files under src/ (else .).
   crap4py --changed            Analyze git-changed Python files.
   crap4py <path>...            Analyze explicit files; directories expand to .py files.
+  crap4py --diff-base <ref>    Analyze only methods intersecting the diff vs <ref>.
   crap4py profile [opts] [p..] Run tests against instrumented source; report timings.
   crap4py file-naming [path]   Check source file names for mechanical names.
   crap4py complexity [opts] [p..] Flag methods over the complexity limit.
@@ -75,8 +79,11 @@ Usage:
   crap4py --help               Print this help message.
 
 Options:
-  --coverage <path>            Coverage file (default: coverage.json).
+  --coverage <path>            Coverage file (default: coverage.json); *.info parses as lcov.
   --threshold <num>            CRAP threshold (default: 8.0).
+  --diff-base <ref>            Only methods touching lines added/changed vs this git ref.
+  --exclude <glob>             Skip files whose project-relative path matches (repeatable).
+  --strict                     Exit 1 when coverage is missing, unreadable, empty, or unparseable.
   --run-tests                  Run tests under coverage before analyzing.
   --version                    Print version and exit.
 
@@ -107,6 +114,24 @@ def _build_parser() -> UsageErrorParser:
     parser.add_argument(
         "--threshold", type=float, default=DEFAULT_THRESHOLD, help="CRAP threshold (default: 8.0)"
     )
+    parser.add_argument(
+        "--diff-base",
+        default=None,
+        metavar="REF",
+        help="only methods touching lines added/changed vs this git ref",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail when coverage data is missing, unreadable, empty, or unparseable",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="skip files whose project-relative path matches this fnmatch glob (repeatable)",
+    )
     parser.add_argument("--run-tests", action="store_true", help="run tests under coverage first")
     parser.add_argument("paths", nargs="*", help="explicit files or directories to analyze")
     return parser
@@ -122,9 +147,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     project_root = Path.cwd()
 
     if args.changed and args.paths:
-        sys.stderr.write(_USAGE)
-        sys.stderr.write("error: --changed cannot be combined with file arguments\n")
-        return 1
+        return _usage_error("--changed cannot be combined with file arguments")
+    if args.changed and args.diff_base is not None:
+        return _usage_error("--changed cannot be combined with --diff-base")
 
     if args.run_tests:
         try:
@@ -133,8 +158,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
+    if args.strict:
+        problem = _strict_error(args)
+        if problem is not None:
+            print(problem, file=sys.stderr)
+            return 1
+
+    diff = None
+    if args.diff_base is not None:
+        diff = load_changed_lines(project_root, args.diff_base, paths=args.paths or None)
+        if diff is None:
+            return 1  # load_changed_lines already reported the git failure
+
     try:
-        files = _select_files(args, project_root)
+        files = _select_files(args, project_root, diff)
     except (RuntimeError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -144,7 +181,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        metrics = analyze([str(f) for f in files], args.coverage, project_root)
+        metrics = analyze(
+            [str(f) for f in files],
+            args.coverage,
+            project_root,
+            diff=diff,
+            strict=args.strict,
+        )
     except (OSError, ValueError) as exc:
         print(f"Error analyzing files: {exc}", file=sys.stderr)
         return 1
@@ -158,12 +201,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _select_files(args: argparse.Namespace, project_root: Path) -> list[Path]:
+def _usage_error(message: str) -> int:
+    sys.stderr.write(_USAGE)
+    sys.stderr.write(f"error: {message}\n")
+    return 1
+
+
+def _strict_error(args: argparse.Namespace) -> str | None:
+    """The strict-mode data problem, or None when the inputs are usable."""
+    for path in args.paths:
+        if not Path(path).exists():
+            return f"Error: no such path: {path}"
+    try:
+        records = load_coverage_records(Path(args.coverage))
+    except OSError as exc:
+        return f"Error: cannot read coverage file {args.coverage}: {exc}"
+    except ValueError as exc:
+        return f"Error: cannot parse coverage file {args.coverage}: {exc}"
+    if not records:
+        return f"Error: no coverage records in {args.coverage}"
+    return None
+
+
+def _select_files(
+    args: argparse.Namespace, project_root: Path, diff: dict[str, set[int]] | None
+) -> list[Path]:
     if args.changed:
-        return changed_files(project_root)
-    if args.paths:
-        return expand_paths(args.paths, project_root)
-    return find_source_files(project_root)
+        files = changed_files(project_root)
+    elif args.paths:
+        files = expand_paths(args.paths, project_root)
+    else:
+        files = find_source_files(project_root)
+    files = _apply_excludes(files, project_root, args.exclude)
+    if diff is not None:
+        files = [f for f in files if diff.get(_relative_to_root(f, project_root))]
+    return files
+
+
+def _apply_excludes(files: list[Path], project_root: Path, excludes: list[str]) -> list[Path]:
+    """Drop files whose project-relative path matches any --exclude glob."""
+    if not excludes:
+        return files
+    return [
+        f
+        for f in files
+        if not any(
+            fnmatch.fnmatch(_relative_to_root(f, project_root), pattern) for pattern in excludes
+        )
+    ]
 
 
 def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None:
