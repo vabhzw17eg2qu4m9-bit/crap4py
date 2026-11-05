@@ -65,6 +65,65 @@ class AnalyzerTest(unittest.TestCase):
         # file field is the resolved abs path (couldn't relativize)
         self.assertTrue(any(m.file.endswith("sample.py") for m in metrics))
 
+    def test_diff_keeps_only_intersecting_methods(self):
+        # sample.py line 9 sits inside branchy (lines 8-13) only.
+        metrics = analyze(
+            [str(self.root / "sample.py")],
+            str(self.root / "coverage.json"),
+            str(self.root),
+            diff={"sample.py": {9}},
+        )
+        self.assertEqual([m.method_name for m in metrics], ["branchy"])
+
+    def test_diff_drops_file_absent_from_diff(self):
+        metrics = analyze(
+            [str(self.root / "sample.py")],
+            str(self.root / "coverage.json"),
+            str(self.root),
+            diff={"other.py": {9}},
+        )
+        self.assertEqual(metrics, [])
+
+    def test_diff_empty_line_set_drops_every_method(self):
+        # A file whose diff hunks are all deletions has no changed lines.
+        metrics = analyze(
+            [str(self.root / "sample.py")],
+            str(self.root / "coverage.json"),
+            str(self.root),
+            diff={"sample.py": set()},
+        )
+        self.assertEqual(metrics, [])
+
+    def test_strict_scores_missing_entry_zero(self):
+        (self.root / "coverage.json").write_text(
+            '{"files": {"other.py": {"executed_lines": [1], "missing_lines": []}}}'
+        )
+        metrics = analyze(
+            [str(self.root / "sample.py")],
+            str(self.root / "coverage.json"),
+            str(self.root),
+            strict=True,
+        )
+        self.assertTrue(metrics)
+        self.assertTrue(all(m.coverage == 0.0 for m in metrics))
+        self.assertTrue(all(m.crap_score is not None for m in metrics))
+
+    def test_strict_keeps_na_for_uncovered_ranges_in_covered_file(self):
+        # sample.py has an entry, but no DA records land in risky's range.
+        (self.root / "coverage.json").write_text(
+            '{"files": {"sample.py": {"executed_lines": [4, 5], "missing_lines": []}}}'
+        )
+        metrics = analyze(
+            [str(self.root / "sample.py")],
+            str(self.root / "coverage.json"),
+            str(self.root),
+            strict=True,
+        )
+        by_name = {m.method_name: m for m in metrics}
+        self.assertAlmostEqual(by_name["simple"].coverage, 1.0)
+        self.assertIsNone(by_name["branchy"].coverage)
+        self.assertIsNone(by_name["risky"].coverage)
+
 
 class SortMetricsTest(unittest.TestCase):
     def _metrics(self):

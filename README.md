@@ -11,7 +11,7 @@
 
 `crap4py` computes the CRAP score for every function/method in a Python
 codebase by combining **cyclomatic complexity** (parsed with the stdlib `ast`
-module) and **line coverage** (read from a `coverage.py` JSON report).
+module) and **line coverage** (read from a `coverage.py` JSON report or an lcov `.info` tracefile).
 
 > **Zero runtime dependencies.** Pure Python standard library only
 > (`ast`, `json`, `argparse`, `subprocess`, `pathlib`, `sys`, `tomllib`).
@@ -55,8 +55,12 @@ pip install -e .
 crap4py                      # analyze all .py under src/ (else .)
 crap4py --changed            # analyze git-changed .py files only
 crap4py path/to/file.py      # analyze explicit files/dirs
+crap4py --diff-base main     # only methods touching lines changed vs a git ref
 crap4py --threshold 5.0      # override the CRAP threshold (default 8.0)
 crap4py --coverage cov.json  # override the coverage file path
+crap4py --coverage cov.info  # lcov tracefile (from `coverage lcov`) instead of JSON
+crap4py --strict             # fail when the coverage file is missing/empty/unparseable
+crap4py --exclude 'gen/*'    # skip files matching a project-relative glob (repeatable)
 crap4py --run-tests          # run tests under coverage, then analyze
 crap4py profile              # run tests against instrumented source; report timings
 crap4py file-naming          # check source file names for mechanical names
@@ -89,12 +93,15 @@ crap4py --help               # print usage
 | *(none)*           | Analyze all `.py` files under `src/` (else the current directory).   |
 | `--changed`        | Analyze only git-changed `.py` files (`git status --porcelain`).     |
 | `<path>...`        | Explicit files or directories; directories expand to `.py` files.    |
-| `--coverage <p>`   | Coverage file path (default: `coverage.json`).                       |
+| `--coverage <p>`   | Coverage file path (default: `coverage.json`); a name ending in `.info` parses as lcov. |
 | `--threshold <n>`  | CRAP threshold (default: `8.0`).                                     |
+| `--diff-base <ref>`| Only methods whose span intersects lines added/changed vs git ref `<ref>` (combines with explicit paths; exclusive with `--changed`). |
+| `--exclude <glob>` | Skip files whose project-relative path matches this fnmatch glob (repeatable). |
+| `--strict`         | Exit 1 when the coverage file is missing, unreadable, empty, or unparseable, or an explicit path does not exist; files without a coverage entry score 0.0% instead of N/A. |
 | `--run-tests`      | Run `coverage run -m pytest` (fallback `unittest`) then `coverage json`. |
 | `--help`           | Print usage and exit.                                                |
 
-`--changed` is mutually exclusive with explicit paths.
+`--changed` is mutually exclusive with explicit paths and `--diff-base`.
 
 ## `crap4py profile`
 
@@ -640,6 +647,18 @@ coverage json -o coverage.json
 
 Or let `crap4py` do it: `crap4py --run-tests`.
 
+A file whose name ends with `.info` is parsed as an lcov tracefile instead —
+e.g. `coverage lcov -o coverage.info` (CI coverage gates often publish lcov):
+
+```bash
+crap4py --coverage coverage.info
+```
+
+`SF:` paths resolve against the project root (absolute paths are relativized
+the same way), each `DA:<line>,<hits>` record is one statement (hit when
+`hits > 0`), duplicate `SF:` sections for one file sum their hits per line,
+and `FN`/`FNDA`/`BRDA`/`LF`/`LH` records are ignored.
+
 The JSON shape (from `coverage.py`):
 
 ```json
@@ -742,7 +761,7 @@ be files or directories.
 | Code | Meaning                                                                |
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
-| `1`  | Usage error (bad flags, `--changed` + paths, unreadable source).       |
+| `1`  | Usage error (bad flags, `--changed` + paths or `--diff-base`, unknown `--diff-base` ref/any git diff failure, `--strict` with missing/unreadable/empty/unparseable coverage or a missing explicit path, unreadable source). |
 | `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error`, `enum-name-contract --severity error` and `collapsible-flow --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
@@ -789,7 +808,7 @@ crap4py/
     complexity.py         ast-based cyclomatic complexity
     cognitive.py          SonarSource-style cognitive complexity
     complexity_gate.py    `complexity` subcommand: per-method metric gate
-    coverage.py           coverage.py JSON parser + attribution
+    coverage.py           coverage.py JSON / lcov parser + attribution
     analyzer.py           orchestration
     report.py             tabular formatter
     files.py              source finder + git changed + path expansion
