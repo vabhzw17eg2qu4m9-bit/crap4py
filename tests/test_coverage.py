@@ -1,7 +1,5 @@
 """Unit tests for coverage.py JSON/lcov parsing and method attribution."""
 
-import io
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +7,6 @@ from pathlib import Path
 from crap4py.coverage import (
     FileCoverage,
     coverage_for_method,
-    load_coverage,
     load_coverage_records,
     parse_coverage_dict,
     parse_lcov,
@@ -75,18 +72,9 @@ class CoverageParsingTest(unittest.TestCase):
         )
         self.assertIn("/other/a.py", cov)
 
-    def test_load_missing_file_warns_and_returns_empty(self):
-        old_err = sys.stderr
-        sys.stderr = io.StringIO()
-        try:
-            result = load_coverage("/nonexistent/path/coverage.json")
-        finally:
-            captured = sys.stderr.getvalue()
-            sys.stderr = old_err
-        self.assertEqual(result, {})
-        self.assertIn("not found", captured)
-        self.assertIn("Hint: generate coverage first", captured)
-        self.assertIn("coverage run -m pytest && coverage json", captured)
+    def test_load_missing_json_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            load_coverage_records("/nonexistent/path/coverage.json")
 
 
 class LcovParsingTest(unittest.TestCase):
@@ -147,11 +135,11 @@ class LcovParsingTest(unittest.TestCase):
     def test_parse_lcov_da_before_sf_ignored(self):
         self.assertEqual(parse_lcov("DA:1,1\nSF:a.py\nend_of_record\n"), {})
 
-    def test_load_coverage_dispatches_info_suffix_to_lcov(self):
+    def test_load_coverage_records_dispatches_info_suffix_to_lcov(self):
         with tempfile.TemporaryDirectory() as tmp:
             info = Path(tmp) / "coverage.info"
             info.write_text("SF:a.py\nDA:1,1\nDA:2,0\nend_of_record\n")
-            cov = load_coverage(info)
+            cov = load_coverage_records(info)
         self.assertEqual(cov, {"a.py": FileCoverage(executed_lines={1}, missing_lines={2})})
 
     def test_load_coverage_records_missing_raises(self):

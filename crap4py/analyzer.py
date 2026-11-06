@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .complexity import extract_methods
-from .coverage import FileCoverage, coverage_for_method, load_coverage
+from .coverage import FileCoverage, coverage_for_method, load_coverage_records
 from .crap import MethodDescriptor, MethodMetric, crap_score
 
 PathLike = str | Path
@@ -25,9 +25,11 @@ def analyze(
     ``diff`` (as produced by ``mutation.load_changed_lines``) keeps only the
     methods whose span intersects the changed lines of their file; ``strict``
     scores a selected file with no coverage entry as 0.0% instead of N/A.
+    Raises OSError/ValueError for a missing, unreadable, or unparseable
+    coverage file.
     """
     root = Path(project_root).resolve()
-    coverage = load_coverage(coverage_path, root)
+    coverage = load_coverage_records(coverage_path, root)
     metrics: list[MethodMetric] = []
     for file_path in file_paths:
         metrics.extend(_analyze_file(file_path, root, coverage, diff, strict))

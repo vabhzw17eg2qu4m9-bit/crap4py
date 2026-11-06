@@ -44,15 +44,15 @@ class AnalyzerTest(unittest.TestCase):
         self.assertAlmostEqual(by_name["risky"].coverage, 0.0)
         self.assertAlmostEqual(by_name["risky"].crap_score, 30.0)
 
-    def test_missing_coverage_yields_na(self):
-        metrics = analyze(
-            [str(self.root / "sample.py")],
-            str(self.root / "does_not_exist.json"),
-            str(self.root),
-        )
-        self.assertTrue(metrics)
-        self.assertTrue(all(m.coverage is None for m in metrics))
-        self.assertTrue(all(m.crap_score is None for m in metrics))
+    def test_missing_coverage_raises(self):
+        # Fail-closed: analyze requires a readable coverage report; the CLI
+        # preflight reports this before analysis.
+        with self.assertRaises(OSError):
+            analyze(
+                [str(self.root / "sample.py")],
+                str(self.root / "does_not_exist.json"),
+                str(self.root),
+            )
 
     def test_file_outside_root_uses_path_as_file_field(self):
         # analyze still works when the file is outside project_root; rel path falls back.

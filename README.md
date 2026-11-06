@@ -52,14 +52,14 @@ pip install -e .
 ## Usage
 
 ```bash
-crap4py                      # analyze all .py under src/ (else .)
+crap4py                      # analyze all .py under src/ (else .); coverage report required
 crap4py --changed            # analyze git-changed .py files only
 crap4py path/to/file.py      # analyze explicit files/dirs
 crap4py --diff-base main     # only methods touching lines changed vs a git ref
 crap4py --threshold 5.0      # override the CRAP threshold (default 8.0)
 crap4py --coverage cov.json  # override the coverage file path
 crap4py --coverage cov.info  # lcov tracefile (from `coverage lcov`) instead of JSON
-crap4py --strict             # fail when the coverage file is missing/empty/unparseable
+crap4py --strict             # files without a coverage entry score 0.0%, not N/A
 crap4py --exclude 'gen/*'    # skip files matching a project-relative glob (repeatable)
 crap4py --run-tests          # run tests under coverage, then analyze
 crap4py profile              # run tests against instrumented source; report timings
@@ -93,15 +93,22 @@ crap4py --help               # print usage
 | *(none)*           | Analyze all `.py` files under `src/` (else the current directory).   |
 | `--changed`        | Analyze only git-changed `.py` files (`git status --porcelain`).     |
 | `<path>...`        | Explicit files or directories; directories expand to `.py` files.    |
-| `--coverage <p>`   | Coverage file path (default: `coverage.json`); a name ending in `.info` parses as lcov. |
+| `--coverage <p>`   | Coverage file path (default: `coverage.json`); a name ending in `.info` parses as lcov. **Required:** a missing, unreadable, empty, or unparseable file exits 1 before any analysis. |
 | `--threshold <n>`  | CRAP threshold (default: `8.0`).                                     |
 | `--diff-base <ref>`| Only methods whose span intersects lines added/changed vs git ref `<ref>` (combines with explicit paths; exclusive with `--changed`). |
 | `--exclude <glob>` | Skip files whose project-relative path matches this fnmatch glob (repeatable). |
-| `--strict`         | Exit 1 when the coverage file is missing, unreadable, empty, or unparseable, or an explicit path does not exist; files without a coverage entry score 0.0% instead of N/A. |
+| `--strict`         | Files without a coverage entry score 0.0% instead of N/A, and an explicit path that does not exist exits 1. (Coverage-missing failures are now the default — see `--coverage`.) |
 | `--run-tests`      | Run `coverage run -m pytest` (fallback `unittest`) then `coverage json`. |
 | `--help`           | Print usage and exit.                                                |
 
 `--changed` is mutually exclusive with explicit paths and `--diff-base`.
+
+**Breaking change:** the CRAP command now fails closed. A missing, unreadable,
+empty, or unparseable coverage report is an error (exit 1) instead of analyzing
+with `N/A` rows — a CRAP score without unit-test coverage is meaningless.
+Generate coverage first (`crap4py --run-tests`, or `coverage run -m pytest &&
+coverage json`). `--strict` keeps only its extras: 0.0% rows for files without
+a coverage entry, and exit 1 for a missing explicit path.
 
 ## `crap4py profile`
 
@@ -674,9 +681,10 @@ The JSON shape (from `coverage.py`):
 ```
 
 Coverage attribution per method: within the method's `[start_line, end_line]`,
-`coverage = |executed ∩ range| / |(executed ∪ missing) ∩ range|`. If the
-coverage file is missing, or a method has no coverage records in its range,
-its coverage and CRAP are `N/A`.
+`coverage = |executed ∩ range| / |(executed ∪ missing) ∩ range|`. The coverage
+report itself is required: a missing, unreadable, empty, or unparseable file
+exits 1 before any analysis. A method with no coverage records in its range
+scores `N/A` (with `--strict`, a file absent from the report scores 0.0%).
 
 ## Report format
 
