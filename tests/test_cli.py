@@ -54,11 +54,34 @@ class CliTest(unittest.TestCase):
         self.assertIn("CRAP Report", r.stdout)
         self.assertIn("passed", r.stdout)
 
-    def test_no_coverage_file_yields_na_exits_0(self):
+    def test_no_coverage_file_exits_1(self):
+        # Fail-closed default: no coverage input is an error, not an N/A pass.
         (self.root / "coverage.json").unlink()
         r = self._run("--threshold", "100")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("N/A", r.stdout)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("coverage file not found", r.stderr)
+        self.assertIn("Unit-test coverage is required", r.stderr)
+        self.assertIn("coverage run -m pytest && coverage json", r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_empty_json_coverage_exits_1(self):
+        (self.root / "coverage.json").write_text("{}")
+        r = self._run()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no coverage records", r.stderr)
+
+    def test_zero_record_lcov_exits_1(self):
+        (self.root / "coverage.json").write_text("TN:\nend_of_record\n")
+        (self.root / "coverage.json").rename(self.root / "coverage.info")
+        r = self._run("--coverage", "coverage.info")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no coverage records", r.stderr)
+
+    def test_unparseable_json_coverage_exits_1(self):
+        (self.root / "coverage.json").write_text("not json")
+        r = self._run()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot parse", r.stderr)
 
     def test_changed_with_paths_exits_1(self):
         r = self._run("--changed", "sample.py")
@@ -268,6 +291,9 @@ class DiffBaseCliTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         shutil.copy(FIXTURES / "sample.py", self.root / "sample.py")
+        # Coverage is required by default; these tests exercise diff
+        # selection, so give them a valid report in the initial commit.
+        shutil.copy(FIXTURES / "coverage.json", self.root / "coverage.json")
         self._git("init", "-q", "-b", "main")
         self._git("config", "user.email", "t@example.com")
         self._git("config", "user.name", "t")

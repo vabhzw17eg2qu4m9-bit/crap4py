@@ -80,10 +80,13 @@ Usage:
 
 Options:
   --coverage <path>            Coverage file (default: coverage.json); *.info parses as lcov.
+                               Required: a missing, unreadable, empty, or unparseable
+                               coverage file is an error (exit 1) before any analysis.
   --threshold <num>            CRAP threshold (default: 8.0).
   --diff-base <ref>            Only methods touching lines added/changed vs this git ref.
   --exclude <glob>             Skip files whose project-relative path matches (repeatable).
-  --strict                     Exit 1 when coverage is missing, unreadable, empty, or unparseable.
+  --strict                     Files without a coverage entry score 0.0% (not N/A);
+                               a missing explicit path exits 1.
   --run-tests                  Run tests under coverage before analyzing.
   --version                    Print version and exit.
 
@@ -123,7 +126,8 @@ def _build_parser() -> UsageErrorParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="fail when coverage data is missing, unreadable, empty, or unparseable",
+        help="score 0.0%% (not N/A) when a file has no coverage entry;"
+        " a missing explicit path exits 1",
     )
     parser.add_argument(
         "--exclude",
@@ -158,11 +162,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
-    if args.strict:
-        problem = _strict_error(args)
-        if problem is not None:
-            print(problem, file=sys.stderr)
-            return 1
+    problem = _strict_error(args) if args.strict else _coverage_error(args)
+    if problem is not None:
+        print(problem, file=sys.stderr)
+        return 1
 
     diff = None
     if args.diff_base is not None:
@@ -207,20 +210,44 @@ def _usage_error(message: str) -> int:
     return 1
 
 
+_COV_HINT = (
+    "generate coverage first — `coverage run -m pytest && coverage json`, "
+    "or run `crap4py --run-tests` to do it automatically"
+)
+
+
+def _coverage_error(args: argparse.Namespace) -> str | None:
+    """The coverage input problem, or None when the coverage data is usable.
+
+    Unit-test coverage is required by default: a missing, unreadable,
+    unparseable, or record-free report is an error, not an N/A pass.
+    """
+    path = args.coverage
+    try:
+        records = load_coverage_records(Path(path))
+    except FileNotFoundError:
+        return (
+            f"Error: coverage file not found at {path}. "
+            f"Unit-test coverage is required.\nHint: {_COV_HINT}."
+        )
+    except OSError as exc:
+        return f"Error: cannot read coverage file {path}: {exc}\nHint: {_COV_HINT}."
+    except ValueError as exc:
+        return f"Error: cannot parse coverage file {path}: {exc}\nHint: {_COV_HINT}."
+    if not records:
+        return (
+            f"Error: no coverage records in {path}. "
+            f"Unit-test coverage is required.\nHint: {_COV_HINT}."
+        )
+    return None
+
+
 def _strict_error(args: argparse.Namespace) -> str | None:
     """The strict-mode data problem, or None when the inputs are usable."""
     for path in args.paths:
         if not Path(path).exists():
             return f"Error: no such path: {path}"
-    try:
-        records = load_coverage_records(Path(args.coverage))
-    except OSError as exc:
-        return f"Error: cannot read coverage file {args.coverage}: {exc}"
-    except ValueError as exc:
-        return f"Error: cannot parse coverage file {args.coverage}: {exc}"
-    if not records:
-        return f"Error: no coverage records in {args.coverage}"
-    return None
+    return _coverage_error(args)
 
 
 def _select_files(

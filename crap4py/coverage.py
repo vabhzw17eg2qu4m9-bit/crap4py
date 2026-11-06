@@ -14,7 +14,6 @@ records ignored.
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,23 +26,6 @@ class FileCoverage:
 
     executed_lines: set[int] = field(default_factory=set)
     missing_lines: set[int] = field(default_factory=set)
-
-
-def load_coverage(path: PathLike, project_root: PathLike | None = None) -> dict[str, FileCoverage]:
-    """Load a coverage report (JSON, or lcov for ``*.info``).
-
-    Returns ``{}`` (with a warning) if absent.
-    """
-    p = Path(path)
-    if not p.exists():
-        print(
-            f"Warning: coverage file not found at {p}. Coverage will be N/A.\n"
-            "Hint: generate coverage first — `coverage run -m pytest && coverage json`, "
-            "or run `crap4py --run-tests` to do it automatically.",
-            file=sys.stderr,
-        )
-        return {}
-    return load_coverage_records(p, project_root)
 
 
 def load_coverage_records(
