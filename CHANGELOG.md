@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.30.0...v0.31.0) (2026-11-06)
+
+
+### Features
+
+* **crap:** require unit-test coverage by default (fail closed) ([#77](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/77)) ([32e1d44](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/32e1d44bfa26712dcd7fd46e4d4033fdf482f320))
+
 ## [0.30.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.29.0...v0.30.0) (2026-11-05)
 
 
