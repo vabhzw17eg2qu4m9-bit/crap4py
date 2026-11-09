@@ -43,8 +43,9 @@ _FILE_RULE = re.compile(r"#\s*ignore-file:([^\s#]*)")
 #: upstream's per-gate ``ignorable: true`` config flag (the flag surface
 #: has no config system, so the registry IS the opt-in). Excluded:
 #: ``folder-structure`` (directory-level findings nothing line- or
-#: file-scoped can address), ``similarity``/``memory`` (informational,
-#: exit 0), ``profile``/``skill`` (not gates).
+#: file-scoped can address), ``test_coverage`` (a project-wide aggregate
+#: whose finding names no source line), ``similarity``/``memory``
+#: (informational, exit 0), ``profile``/``skill`` (not gates).
 IGNORABLE_GATES = frozenset(
     {
         "banned_imports",
@@ -56,9 +57,12 @@ IGNORABLE_GATES = frozenset(
         "file_naming",
         "identical_branches",
         "inline_record_types",
+        "loc",
         "magic_constants",
+        "method_size",
         "mutation",
         "nesting",
+        "public_docs",
         "scattered_constants",
         "string_hazards",
         "test_assertions",

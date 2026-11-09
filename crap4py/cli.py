@@ -27,6 +27,10 @@ _SUBCOMMANDS = (
     "complexity",
     "nesting",
     "class-size",
+    "loc",
+    "method-size",
+    "public-docs",
+    "test-coverage",
     "weight-of-class",
     "unused-code",
     "unused-files",
@@ -58,6 +62,10 @@ Usage:
   crap4py complexity [opts] [p..] Flag methods over the complexity limit.
   crap4py nesting [path]       Check functions for nesting deeper than 5 levels.
   crap4py class-size [path]    Check classes for >25 methods or WMC >80.
+  crap4py loc [opts] [p..]     Flag files longer than the line limit (default 800).
+  crap4py method-size [opts] [p..]  Flag methods over the 60-line/6-param limits.
+  crap4py public-docs [p..]    Flag public declarations without docstrings.
+  crap4py test-coverage [opts] Fail when total coverage is below --min-percent (80).
   crap4py weight-of-class [p.] Check classes for public data weight >0.33.
   crap4py unused-code [path]   Check for unused private module declarations.
   crap4py unused-files [path]  Check for source files never imported.
@@ -287,16 +295,20 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         class_size,
         collapsible_flow,
         complexity_gate,
+        coverage_gate,
         duplicates,
         enum_name_contract,
         file_naming,
         folder_structure,
         identical_branches,
+        loc,
         magic_constants,
         memory,
+        method_size,
         mutation,
         nesting,
         profile,
+        public_docs,
         reorder,
         scattered_constants,
         similarity,
@@ -316,6 +328,10 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "complexity": complexity_gate.run,
         "nesting": nesting.run,
         "class-size": class_size.run,
+        "loc": loc.run,
+        "method-size": method_size.run,
+        "public-docs": public_docs.run,
+        "test-coverage": coverage_gate.run,
         "weight-of-class": weight_of_class.run,
         "unused-code": unused_code.run,
         "unused-files": unused_files.run,

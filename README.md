@@ -67,6 +67,10 @@ crap4py file-naming          # check source file names for mechanical names
 crap4py complexity           # flag methods over the complexity limit (--metric cyclomatic|cognitive)
 crap4py nesting              # check functions for nesting deeper than 5 levels
 crap4py class-size           # check classes for >25 methods or WMC >80
+crap4py loc                  # flag files longer than the line limit (default 800)
+crap4py method-size          # flag methods over the 60-line / 6-param limits
+crap4py public-docs          # flag public declarations without docstrings
+crap4py test-coverage        # fail when total coverage is below --min-percent (80)
 crap4py weight-of-class      # check classes for public data weight >0.33
 crap4py unused-code          # check for unused private module declarations
 crap4py unused-files         # check for source files never imported
@@ -171,16 +175,24 @@ violations.
 
 ## Gate subcommands (ported from crap4dart 0.5.x–0.9.x)
 
-Eleven quality-gate checks, each a standalone subcommand taking optional
+Quality-gate checks, each a standalone subcommand taking optional
 explicit paths (default: the normal §4-style selection — `src/` else `.`,
 test files skipped; `test-assertions` inverts this and scans test files).
-All exit `2` iff violations, `1` on usage errors.
+All exit `2` iff violations, `1` on usage errors. Ignore markers
+(`# ignore:<gate_id>` / `# ignore-file:<gate_id>`) are honored by all of
+them except `test-coverage` (a project-wide aggregate that names no
+source line); `loc` findings are file-scoped, so only file markers apply
+to them — see `crap4py ignore_filter.IGNORABLE_GATES`.
 
 | Subcommand                | Fails when …                                                        |
 |---------------------------|---------------------------------------------------------------------|
 | `complexity [--metric M] [--max N] [paths...]` | a method's complexity exceeds N (default 10) — `M` is `cyclomatic` (default) or `cognitive`. |
 | `nesting [paths...]`      | a function's control-flow nesting exceeds 5 levels (body = 1; `elif` chains stay flat). |
 | `class-size [paths...]`   | a class has >25 concrete methods or a complexity sum (WMC) >80.     |
+| `loc [--max-lines N] [--exclude GLOB]... [paths...]` | a file holds more than N lines (default 800); `--exclude` globs (project-relative fnmatch, repeatable) drop files from the check. |
+| `method-size [--max-lines N] [--max-params N] [paths...]` | a method spans more than N lines (default 60, `end_lineno - lineno + 1`) or takes more than N parameters (default 6; positional-only, keyword-only, `*args`, `**kwargs` all count — Python receivers `self`/`cls` included, since Dart's receiver is implicit; nested defs are checked, named like `m.inner`). `__init__` constructors are checked for parameter count only (the upstream constructor rule). |
+| `public-docs [--exclude GLOB]... [paths...]` | a public declaration — the module itself, module-level functions and classes, public methods of public classes — has no docstring (`ast.get_docstring`). Underscore-prefixed names are private; members of private classes are exempt. Upstream's `@override` exemption is not ported (PEP 698 `typing.override` is not honored — stricter only). |
+| `test-coverage [--min-percent F] [--coverage PATH] [--exclude GLOB]...` | the total statement-hit ratio (executed ÷ executed+missing lines, aggregated over the coverage records) is below F percent (default 80.0). Reads the same coverage input as the CRAP command (`coverage.json` or lcov `.info`, `--coverage` to point at it); records outside the project root never count toward the ratio and an all-foreign input fails closed; missing/unreadable/unparseable/record-free coverage fails closed with exit 1, matching the CRAP command's require-coverage semantics. |
 | `weight-of-class [paths…]`| a class's public data share (`self.<attr>` fields ÷ public members) >0.33. |
 | `unused-code [paths...]`  | a module-level private name (`_func`, `_x = …`) is never referenced in its module. |
 | `unused-files [paths...]` | a non-test file is never imported by any analyzed non-test file (`__init__.py` re-exports count; `__init__.py`/`__main__.py` exempt). |
