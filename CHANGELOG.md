@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.31.0...v0.32.0) (2026-11-09)
+
+
+### Features
+
+* **gates:** port loc, method-size, public-docs, test-coverage from crap4dart ([#79](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/79)) ([9b76e2f](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/9b76e2fec5af0ce05d6ff8d0cae94985515eac41))
+
 ## [0.31.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.30.0...v0.31.0) (2026-11-06)
 
 
