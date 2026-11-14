@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.32.0...v0.33.0) (2026-11-14)
+
+
+### Features
+
+* **similarity,profile:** large-tree memory + observer-effect fixes (crap4dart ad4f27b9f14d) ([#81](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/81)) ([27091ac](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/27091ac480f76026e680cff6e6fc6fef92d0d5a8))
+
 ## [0.32.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.31.0...v0.32.0) (2026-11-09)
 
 
