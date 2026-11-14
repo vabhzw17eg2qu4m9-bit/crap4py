@@ -12,7 +12,10 @@ brackets all fixture work — and records one JSONL line:
 - ``churn_bytes``: peak live traced memory above the window-start baseline
   (``tracemalloc.reset_peak``); deterministic per code path;
 - ``retained_bytes``: signed net traced-memory delta across the window —
-  the old-gen-growth analog (positive = the test left memory behind);
+  the old-gen-growth analog (positive = the test left memory behind).
+  A leak SUSPECT only: much of a positive window delta is reclaimed on
+  teardown, so judge leaks by post-teardown/steady-state retained
+  growth, never by this number alone;
 - ``gcs``/``gc_collected``: GC events during the window via the
   ``gc.callbacks`` tap — machine-dependent, diagnostics only.
 

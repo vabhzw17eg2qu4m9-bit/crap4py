@@ -18,9 +18,15 @@ from pathlib import Path
 
 from crap4py.similarity import (
     CODE,
+    DEFAULT_EXCLUDE,
     MARKDOWN,
+    MAX_SCAN_FILES,
     RAW,
     SimilarityConfig,
+    SimilarityFile,
+    SimilarityScanTooLarge,
+    _collect,
+    _pairs_over_thresholds,
     analyze,
     containment,
     intersection_count,
@@ -550,6 +556,212 @@ class RunTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("2 files in 1 clusters", result.stdout)
+
+
+class ShingleHashTest(unittest.TestCase):
+    """ad4f27b9f14d: shingles are 64-bit FNV-1a hashes with a separator
+    unit terminated after every token, so token boundaries can't blur."""
+
+    def test_separator_makes_token_split_distinct(self):
+        # ["ab", "c", ...] vs ["a", "bc", ...] — the joined-string scheme
+        # ("ab\x1fc…" == "a\x1fbc…") collapsed these; hashing per token
+        # with a separator must not.
+        left = shingles_for("ab c x1 x2 x3 x4 x5 x6", CODE, "l.py")
+        right = shingles_for("a bc x1 x2 x3 x4 x5 x6", CODE, "r.py")
+        self.assertEqual(len(left), 1)
+        self.assertEqual(len(right), 1)
+        self.assertTrue(left.isdisjoint(right), "token-boundary shift must change the hash")
+
+    def test_hashes_are_non_negative_63bit_ints(self):
+        content = _prose("hash", 12)
+        for shingle in shingles_for(content, MARKDOWN):
+            self.assertIsInstance(shingle, int)
+            self.assertGreaterEqual(shingle, 0)
+            self.assertLess(shingle, 1 << 63)
+
+    def test_identical_content_still_hashes_identically(self):
+        content = _prose("same", 12)
+        self.assertEqual(shingles_for(content, MARKDOWN), shingles_for(content, MARKDOWN))
+
+    def test_cyrillic_and_ascii_words_hash_distinctly(self):
+        ascii_shingles = shingles_for("word one two three four five six seven", MARKDOWN)
+        cyrillic = shingles_for("ворд один два три четыре пять шесть семь", MARKDOWN)
+        self.assertEqual(len(ascii_shingles), 1)
+        self.assertEqual(len(cyrillic), 1)
+        self.assertTrue(ascii_shingles.isdisjoint(cyrillic))
+
+
+class _BoilerplateCorpusTest(unittest.TestCase):
+    """Shared fixture: files that are unique prose plus exactly ONE shared
+    8-token boilerplate run. Measured: each file has 9 shingles, files
+    share exactly 1 — jaccard 1/17 ≥ 0.05, so every pair crosses a 0.05
+    Jaccard threshold and the ONLY thing keeping pairs out of the report
+    is the >100-postings boilerplate skip."""
+
+    BOILER = "boiler00 boiler01 boiler02 boiler03 boiler04 boiler05 boiler06 boiler07"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _file(self, name: str, tag: str) -> None:
+        unique = " ".join(f"{tag}{i:02d}" for i in range(8))
+        _write(self.root, name, f"{self.BOILER}\n\n{unique}\n")
+
+    def _measured(self, count: int, tag: str) -> list[SimilarityFile]:
+        """Writes ``count`` files and asserts the shingle math the test
+        relies on (a fixture that drifts must fail loudly, not vacuously)."""
+        for i in range(count):
+            self._file(f"f{i:03d}.md", f"{tag}{i:03d}w")
+        files = [
+            SimilarityFile(rel, shingles_for(path.read_text(encoding="utf-8"), MARKDOWN))
+            for rel, path in _collect(self.root, ["."], ["**/*.md"], ())
+        ]
+        self.assertEqual(len(files), count)
+        for file in files:
+            self.assertEqual(len(file.shingles), 9, "fixture must measure 9 shingles per file")
+        shared = files[0].shingles & files[1].shingles
+        self.assertEqual(len(shared), 1, "fixture files must share exactly the boilerplate shingle")
+        self.assertAlmostEqual(jaccard(files[0].shingles, files[1].shingles), 1 / 17, places=4)
+        return files
+
+
+class PostingsBoilerplateSkipTest(_BoilerplateCorpusTest):
+    """ad4f27b9f14d: postings lists over 100 files are skipped as
+    boilerplate — an observable behavior: at jaccard 0.05 every pair of
+    these files crosses the threshold, so the skip alone decides."""
+
+    def test_at_100_postings_every_pair_is_found(self):
+        files = self._measured(100, "una")
+        pairs = _pairs_over_thresholds(files, 0.05, 0.95)
+        self.assertEqual(len(pairs), 100 * 99 // 2)
+
+    def test_over_100_postings_no_pairs_at_the_same_threshold(self):
+        files = self._measured(101, "unb")
+        pairs = _pairs_over_thresholds(files, 0.05, 0.95)
+        self.assertEqual(pairs, (), "the boilerplate skip must remove all candidates")
+
+
+class CandidateEquivalenceTest(unittest.TestCase):
+    """ad4f27b9f14d: the inverted index must propose exactly the pairs the
+    naive all-pairs loop compares — same pairs found, same metrics."""
+
+    def test_candidates_match_all_pairs_on_a_mixed_corpus(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(_cleanup, root)
+        contents = {
+            "a.md": _prose("dup", 12),  # twins
+            "b.md": _prose("dup", 12),
+            "c.md": _prose("pair", 12),  # twins
+            "d.md": _prose("pair", 12),
+            "e.md": _prose("solo", 12),  # unique
+            "f.md": _prose("whollydifferent", 12),  # unique
+            "g.md": _prose("dup", 12) + _prose("extra", 6),  # 2/3 of the twins
+        }
+        for name, content in contents.items():
+            _write(root, name, content)
+        measured = [(n, shingles_for(c, MARKDOWN)) for n, c in contents.items()]
+        for _, shingles in measured:
+            self.assertGreaterEqual(len(shingles), 50, "fixture must clear the 50-shingle floor")
+        report = analyze(
+            root,
+            dirs=["."],
+            include=["**/*.md"],
+            exclude=(),
+            jaccard_threshold=0.8,
+            containment_threshold=0.95,
+            min_shingles=50,
+        )
+        # Brute-force all-pairs reference over the same shingle sets.
+        expected: set[tuple[str, str]] = set()
+        for i in range(len(measured)):
+            for j in range(i + 1, len(measured)):
+                (a, sa), (b, sb) = measured[i], measured[j]
+                if jaccard(sa, sb) >= 0.8 or containment(sa, sb) >= 0.95:
+                    expected.add(tuple(sorted((a, b))))
+        self.assertIn(("a.md", "b.md"), expected, "fixture must contain twins")
+        self.assertNotIn(("e.md", "f.md"), expected, "fixture must contain disjoint files")
+        found = {tuple(sorted((p.a, p.b))) for p in report.pairs}
+        self.assertEqual(found, expected)
+        for pair in report.pairs:
+            a, b = (
+                next(s for n, s in measured if n == pair.a),
+                next(s for n, s in measured if n == pair.b),
+            )
+            self.assertAlmostEqual(pair.jaccard, jaccard(a, b))
+            self.assertAlmostEqual(pair.containment, containment(a, b))
+
+
+class ScanCapTest(unittest.TestCase):
+    """ad4f27b9f14d: a scope above MAX_SCAN_FILES fails loudly with
+    guidance instead of exhausting memory on the shingle index."""
+
+    OVER_CAP = MAX_SCAN_FILES + 1
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        # Empty files: the cap trips right after collection, before any
+        # content is read or shingled.
+        for i in range(cls.OVER_CAP):
+            (cls.root / f"f{i:05d}.md").write_text("", encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _analyze(self):
+        return analyze(
+            self.root,
+            dirs=["."],
+            include=["**/*.md"],
+            exclude=(),
+            jaccard_threshold=0.5,
+            containment_threshold=0.85,
+            min_shingles=50,
+        )
+
+    def test_analyze_raises_above_the_cap(self):
+        with self.assertRaises(SimilarityScanTooLarge) as ctx:
+            self._analyze()
+        self.assertEqual(ctx.exception.matched, self.OVER_CAP)
+        self.assertEqual(ctx.exception.max_files, MAX_SCAN_FILES)
+
+    def test_message_names_the_narrowing_options(self):
+        with self.assertRaises(SimilarityScanTooLarge) as ctx:
+            self._analyze()
+        text = str(ctx.exception)
+        self.assertIn(str(self.OVER_CAP), text)
+        self.assertIn("20000", text)
+        self.assertIn("include", text)
+        self.assertIn("exclude", text)
+
+    def test_run_exits_1_with_the_actionable_message(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = run(["--jaccard", "0.5"], self.root)
+        self.assertEqual(code, 1)
+
+
+class DefaultExcludesTest(unittest.TestCase):
+    def test_worktrees_excluded_by_default(self):
+        self.assertEqual(SimilarityConfig().exclude[-1], ".worktrees/**")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(_cleanup, root)
+        _write(root, "a.md", _prose("kept", 12))
+        _write(root, ".worktrees/ad4f27b-py/b.md", _prose("kept", 12))
+        report = analyze(
+            root,
+            dirs=["."],
+            include=["**/*.md"],
+            exclude=DEFAULT_EXCLUDE,
+            jaccard_threshold=0.8,
+            containment_threshold=0.95,
+            min_shingles=50,
+        )
+        self.assertEqual(report.scanned, 1, "the worktree copy must not enter the scan")
 
 
 def _cleanup(root: Path) -> None:

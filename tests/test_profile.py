@@ -101,11 +101,24 @@ class FakeClock:
 
 
 class CollectorTest(unittest.TestCase):
+    """Collector contract (upstream ad4f27b9f14d): per-writer cumulative
+    shard files, nested exits I/O-free, outermost exit + backstop flush
+    points, opt-in outermost throttle, #flushes diagnostic."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.out = self.root / "timings.json"
+
+    def tearDown(self):
+        for name in (
+            "CRAP_PROFILE_OUTPUT",
+            "CRAP_PROFILE_FLUSH_MS",
+            "CRAP_PROFILE_FLUSH_EVERY",
+            "CRAP_PROFILE_SHARD",
+        ):
+            os.environ.pop(name, None)
 
     def _collector(self, clock=None):
         namespace: dict = {"__name__": "_crap_collector_test"}
@@ -120,83 +133,142 @@ class CollectorTest(unittest.TestCase):
         clock.now += micros / 1e6
         ns["exit"](key)
 
-    def test_enter_exit_and_flush_aggregate(self):
+    def _set_output(self):
         os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+
+    def _shards(self):
+        """The writer's shard files (never the in-flight .tmp ones)."""
+        return sorted(
+            p
+            for p in self.root.iterdir()
+            if p.name.startswith("timings.json.") and p.name.endswith(".json")
+        )
+
+    def _read_one_shard(self):
+        shards = self._shards()
+        self.assertEqual(len(shards), 1, f"expected one shard, got {shards}")
+        return json.loads(shards[0].read_text(encoding="utf-8"))
+
+    def test_enter_exit_and_flush_aggregate(self):
+        self._set_output()
         clock = FakeClock()
         ns = self._collector(clock)
         self._call(ns, clock, "a", 100.0)
         self._call(ns, clock, "a", 300.0)
         self._call(ns, clock, "b", 50.0)
         ns["flush"]()
-        data = json.loads(self.out.read_text(encoding="utf-8"))
+        data = self._read_one_shard()
         self.assertEqual(data["a"]["calls"], 2)
         self.assertAlmostEqual(data["a"]["totalMicros"], 400.0)
         self.assertAlmostEqual(data["a"]["totalSelfMicros"], 400.0)
         self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
         self.assertAlmostEqual(data["a"]["maxMicros"], 300.0)
         self.assertEqual(data["b"]["calls"], 1)
+        # Cumulative shard: 3 outermost exits flushed + the explicit flush.
+        self.assertEqual(data["#flushes"]["calls"], 4)
 
-    def test_flush_merges_across_instances(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+    def test_writers_own_private_shards_and_the_merge_sums_them(self):
+        """The old read-merge-write shared file is gone: two writers produce
+        two shard files, each holding ONLY its own cumulative data — the
+        runner's merge does the summing (lost updates impossible)."""
+        self._set_output()
         clock = FakeClock()
         first, second = self._collector(clock), self._collector(clock)
         self._call(first, clock, "a", 100.0)
         first["flush"]()
         self._call(second, clock, "a", 400.0)
         second["flush"]()
-        data = json.loads(self.out.read_text(encoding="utf-8"))
-        self.assertEqual(data["a"]["calls"], 2)
-        self.assertAlmostEqual(data["a"]["totalMicros"], 500.0)
-        self.assertAlmostEqual(data["a"]["totalSelfMicros"], 500.0)
-        self.assertAlmostEqual(data["a"]["minMicros"], 100.0)
-        self.assertAlmostEqual(data["a"]["maxMicros"], 400.0)
+        shards = self._shards()
+        self.assertEqual(len(shards), 2, "each writer owns its own shard file")
+        per_writer = sorted(json.loads(p.read_text(encoding="utf-8"))["a"]["calls"] for p in shards)
+        self.assertEqual(per_writer, [1, 1], "no shard may contain the other writer's data")
+        merged = profile._load_timings(self.out)
+        self.assertEqual(merged["a"]["calls"], 2)
+        self.assertAlmostEqual(merged["a"]["totalMicros"], 500.0)
+        self.assertAlmostEqual(merged["a"]["minMicros"], 100.0)
+        self.assertAlmostEqual(merged["a"]["maxMicros"], 400.0)
 
-    def test_auto_flush_every_5_records_without_double_counting(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
-        clock = FakeClock()
-        ns = self._collector(clock)
-        for _ in range(5):
-            self._call(ns, clock, "a", 10.0)
-        self.assertTrue(self.out.exists(), "5th record must flush")
-        for _ in range(3):
-            self._call(ns, clock, "a", 10.0)
-        ns["flush"]()
-        data = json.loads(self.out.read_text(encoding="utf-8"))
-        self.assertEqual(data["a"]["calls"], 8)
-        self.assertAlmostEqual(data["a"]["totalMicros"], 80.0)
-
-    def test_outermost_exit_flushes_before_five_records(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+    def test_outermost_exit_flushes(self):
+        self._set_output()
         clock = FakeClock()
         ns = self._collector(clock)
         self._call(ns, clock, "a", 10.0)
-        self.assertTrue(self.out.exists(), "outermost exit must flush the tail")
-        data = json.loads(self.out.read_text(encoding="utf-8"))
+        data = self._read_one_shard()
         self.assertEqual(data["a"]["calls"], 1)
 
-    def test_nested_records_wait_for_the_outermost_exit(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+    def test_nested_exits_touch_no_filesystem(self):
+        self._set_output()
         clock = FakeClock()
         ns = self._collector(clock)
         ns["enter"]("outer")
         ns["enter"]("inner")
         clock.now += 10.0 / 1e6
         ns["exit"]("inner")
-        self.assertFalse(self.out.exists(), "inner exit must not flush")
+        self.assertEqual(self._shards(), [], "inner exit must not write anything")
         clock.now += 20.0 / 1e6
         ns["exit"]("outer")
-        data = json.loads(self.out.read_text(encoding="utf-8"))
+        data = self._read_one_shard()
         self.assertEqual(data["outer"]["calls"], 1)
         self.assertEqual(data["inner"]["calls"], 1)
 
+    def test_backstop_flushes_while_stuck_nonempty(self):
+        """CRAP_PROFILE_FLUSH_EVERY bounds the loss of a stack that never
+        empties: the Nth nested call still writes the shard."""
+        os.environ["CRAP_PROFILE_FLUSH_EVERY"] = "3"
+        self._set_output()
+        clock = FakeClock()
+        ns = self._collector(clock)
+        ns["enter"]("l0")
+        ns["enter"]("l1")
+        ns["enter"]("l2")
+        ns["enter"]("l3")
+        clock.now += 1.0 / 1e6
+        ns["exit"]("l3")
+        ns["exit"]("l2")
+        self.assertEqual(self._shards(), [], "below the backstop nothing is written")
+        ns["exit"]("l1")  # call #3 while "l0" is still open
+        shards = self._shards()
+        self.assertEqual(len(shards), 1, "backstop must flush despite the stuck stack")
+        data = json.loads(shards[0].read_text(encoding="utf-8"))
+        self.assertEqual(data["l1"]["calls"], 1)
+        self.assertNotIn("l0", data, "the open frame has not returned yet")
+
+    def test_throttle_trades_tail_loss_until_explicit_flush(self):
+        """CRAP_PROFILE_FLUSH_MS > 0 skips outermost flushes inside the
+        interval (documented tail loss); an explicit flush() delivers."""
+        os.environ["CRAP_PROFILE_FLUSH_MS"] = "60000"
+        self._set_output()
+        clock = FakeClock()
+        ns = self._collector(clock)
+        self._call(ns, clock, "a", 10.0)
+        self._call(ns, clock, "a", 10.0)
+        self.assertEqual(self._shards(), [], "throttled outermost exits must not write")
+        ns["flush"]()
+        data = self._read_one_shard()
+        self.assertEqual(data["a"]["calls"], 2)
+
+    def test_flush_counter_counts_writes_and_merge_skips_it(self):
+        self._set_output()
+        clock = FakeClock()
+        ns = self._collector(clock)
+        self._call(ns, clock, "a", 10.0)  # outermost exit: flush #1
+        self._call(ns, clock, "a", 10.0)  # outermost exit: flush #2
+        data = self._read_one_shard()
+        self.assertEqual(data["#flushes"]["calls"], 2)
+        merged = profile._load_timings(self.out)
+        self.assertNotIn("#flushes", merged, "diagnostics must not become timings")
+        self.assertEqual(merged["a"]["calls"], 2)
+
+    def test_shard_id_follows_env_override(self):
+        os.environ["CRAP_PROFILE_SHARD"] = "worker7"
+        self._set_output()
+        clock = FakeClock()
+        ns = self._collector(clock)
+        self._call(ns, clock, "a", 10.0)
+        self.assertEqual([p.name for p in self._shards()], ["timings.json.worker7.json"])
+
     def test_nested_self_time_excludes_inner_call(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        self._set_output()
         clock = FakeClock()
         ns = self._collector(clock)
         ns["enter"]("outer")
@@ -205,8 +277,7 @@ class CollectorTest(unittest.TestCase):
         ns["exit"]("inner")
         clock.now += 800.0 / 1e6
         ns["exit"]("outer")
-        ns["flush"]()
-        data = json.loads(self.out.read_text(encoding="utf-8"))
+        data = self._read_one_shard()
         outer, inner = data["outer"], data["inner"]
         # perf_counter round-trips through /1e6 *1e6, so compare with a
         # float tolerance — only the *relations* are exact.
@@ -222,8 +293,7 @@ class CollectorTest(unittest.TestCase):
         self.assertGreaterEqual(inner["totalSelfMicros"], 0)
 
     def test_threaded_frames_do_not_cross_contaminate(self):
-        os.environ["CRAP_PROFILE_OUTPUT"] = str(self.out)
-        self.addCleanup(os.environ.pop, "CRAP_PROFILE_OUTPUT", None)
+        self._set_output()
         ns = self._collector()
         rounds = 25
         barrier = threading.Barrier(2)
@@ -247,7 +317,7 @@ class CollectorTest(unittest.TestCase):
         for t in threads:
             t.join()
         ns["flush"]()
-        data = json.loads(self.out.read_text(encoding="utf-8"))
+        data = self._read_one_shard()
         for prefix in ("ta", "tb"):
             outer, inner = data[f"{prefix}.outer"], data[f"{prefix}.inner"]
             self.assertEqual(outer["calls"], rounds)
@@ -405,10 +475,77 @@ class FmtTotalTest(unittest.TestCase):
 
 
 class LoadTimingsTest(unittest.TestCase):
+    """The runner merge: base file + shards, corrupt/tmp/diagnostics
+    skipped, sum(calls, totals) / min(minima) / max(maxima)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.out = self.root / "timings.json"
+
+    def _write(self, name: str, content: str) -> None:
+        (self.root / name).write_text(content, encoding="utf-8")
+
+    def _load(self) -> tuple[dict[str, dict], str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            data = profile._load_timings(self.out)
+        return data, err.getvalue()
+
     def test_missing_file_warns_and_returns_empty(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(profile._load_timings(Path("/nonexistent/x.json")), {})
-        self.assertIn("no profiling data", err.getvalue())
+        data, err = self._load()
+        self.assertEqual(data, {})
+        self.assertIn("no profiling data", err)
+
+    def test_corrupt_shard_skipped_and_good_ones_still_report(self):
+        self._write("timings.json.dead.json", "{not json")
+        self._write("timings.json.list.json", "[1, 2, 3]")
+        self._write("timings.json.good.json", '{"m.f": {"calls": 2, "totalMicros": 30.0}}')
+        data, _ = self._load()
+        self.assertEqual(data["m.f"]["calls"], 2)
+
+    def test_tmp_files_excluded(self):
+        self._write("timings.json.shard.json.tmp0", '{"m.f": {"calls": 99}}')
+        self._write("timings.json.tmp123", '{"m.f": {"calls": 99}}')
+        self._write("timings.json.good.json", '{"m.f": {"calls": 1, "totalMicros": 5.0}}')
+        data, _ = self._load()
+        self.assertEqual(data["m.f"]["calls"], 1)
+
+    def test_legacy_base_file_merges_with_shards(self):
+        self._write(
+            "timings.json",
+            '{"m.f": {"calls": 4, "totalMicros": 40.0, "minMicros": 5.0, "maxMicros": 20.0}}',
+        )
+        self._write(
+            "timings.json.s1.json",
+            '{"m.f": {"calls": 1, "totalMicros": 100.0, "minMicros": 100.0, "maxMicros": 100.0}}',
+        )
+        data, _ = self._load()
+        self.assertEqual(data["m.f"]["calls"], 5)
+        self.assertAlmostEqual(data["m.f"]["totalMicros"], 140.0)
+        self.assertAlmostEqual(data["m.f"]["minMicros"], 5.0)
+        self.assertAlmostEqual(data["m.f"]["maxMicros"], 100.0)
+
+    def test_shards_merge_sum_min_max(self):
+        self._write(
+            "timings.json.a.json",
+            '{"m.f": {"calls": 3, "totalMicros": 30.0, "minMicros": 8.0, "maxMicros": 12.0}}',
+        )
+        self._write(
+            "timings.json.b.json",
+            '{"m.f": {"calls": 2, "totalMicros": 50.0, "minMicros": 24.0, "maxMicros": 26.0}}',
+        )
+        data, _ = self._load()
+        self.assertEqual(data["m.f"]["calls"], 5)
+        self.assertAlmostEqual(data["m.f"]["totalMicros"], 80.0)
+        self.assertAlmostEqual(data["m.f"]["minMicros"], 8.0)
+        self.assertAlmostEqual(data["m.f"]["maxMicros"], 26.0)
+
+    def test_diagnostics_and_non_map_entries_skipped(self):
+        self._write("timings.json.a.json", '{"#flushes": {"calls": 3}, "m.f": {"calls": 1}}')
+        data, _ = self._load()
+        self.assertEqual(list(data), ["m.f"])
 
 
 class PythonpathTest(unittest.TestCase):
@@ -515,21 +652,35 @@ class EndToEndTest(unittest.TestCase):
 
 
 class FailingTestsTest(unittest.TestCase):
-    """Covers the warning path when the test suite fails in the temp copy."""
+    """Covers the failure-report path: an explicit TESTS FAILED marker
+    (so a threshold exit 2 can never be mistakable for the test run's own
+    failure) and the LAST 30 lines of runner output (the error lives at
+    the tail, progress noise at the head)."""
 
-    def test_failed_run_warns_and_returns_empty_timings(self):
+    def test_failed_run_marks_tests_failed_and_reports_tail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+            prints = "\n".join(f'        print("filler line {i:02d}")' for i in range(40))
             (root / "test_mod.py").write_text(
                 "import unittest\n\nimport mod\n\n\nclass T(unittest.TestCase):\n"
-                "    def test_fails(self):\n        self.assertEqual(mod.f(), 2)\n",
+                "    def test_fails(self):\n"
+                f"{prints}\n"
+                '        print("TAIL-SENTINEL after the fillers")\n'
+                "        self.assertEqual(mod.f(), 2)\n",
                 encoding="utf-8",
             )
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 timings = collect_timings([root / "mod.py"], root, name=None)
-            self.assertIn("Warning:", err.getvalue())
+            reported = err.getvalue()
+            self.assertIn("TESTS FAILED", reported)
+            self.assertIn("separate from any threshold verdict", reported)
+            # Tail-30: the sentinel sits 1 line above the failure summary;
+            # the head fillers are cut.
+            self.assertIn("TAIL-SENTINEL", reported)
+            self.assertNotIn("filler line 00", reported)
+            self.assertNotIn("filler line 09", reported)
             # The failing test still executed instrumented code and flushed.
             self.assertIn("mod.f", timings)
 

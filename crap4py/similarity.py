@@ -5,13 +5,20 @@ Port of the crap4dart ``similarity`` gate + command (upstream 2b21966,
 fenced code blocks, code drops comments/import-family lines and maps
 literals to placeholders, raw is compared as-is — tokenized (markdown/raw:
 2+ letter words lowercased; code: identifiers lowercased and literal
-placeholders), and represented as the set of its 8-token shingles. Two
+placeholders), and represented as the set of its 8-token shingle hashes (64-bit FNV-1a,
+each token terminated by a separator unit so ``["ab", "c"]`` and
+``["a", "bc"]`` hash differently — hashing keeps 8 bytes per shingle
+instead of the joined string, upstream ad4f27b9f14d). Two
 files are *similar* when Jaccard(A, B) >= ``--jaccard`` (default 0.8) OR
 containment(A, B) >= ``--containment`` (default 0.95; intersection over
 the smaller set — catches a small file largely copied into a big one).
 Similar pairs merge transitively into clusters (union-find). Files with
 fewer than ``--min-shingles`` shingles (default 50) are skipped — tiny
-files carry no reliable signal.
+files carry no reliable signal. Comparisons are candidate-pruned through
+an inverted shingle index (pairs sharing at least one shingle hash;
+postings over 100 files are skipped as boilerplate), and a scope
+matching more than 20000 files is a loud usage error instead of a
+memory exhaustion.
 
 Profiles are extension-mapped (``.md``/``.markdown``/``.mdx`` → markdown;
 a 25-extension code family; anything else raw). The code profile is
@@ -24,7 +31,8 @@ token alphabet.
 
 Informational, like upstream: the command is the exploration tool for
 tuning thresholds before relying on it, prints console or JSON reports,
-and ALWAYS exits 0 (usage errors exit 1). Unlike upstream there is no
+and ALWAYS exits 0 (usage errors exit 1, including an over-broad scan
+scope). Unlike upstream there is no
 config file — the flags below are the whole config surface (kebab-case,
 strictly validated).
 """
@@ -37,7 +45,9 @@ import io
 import json
 import os
 import re
+import sys
 import tokenize
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +58,14 @@ SHINGLE_SIZE = 8
 DEFAULT_MIN_SHINGLES = 50
 DEFAULT_JACCARD = 0.8
 DEFAULT_CONTAINMENT = 0.95
+#: Hard ceiling on files one scan analyzes. Beyond this the scope is
+#: almost certainly an over-broad ``--include``/``dirs`` (vendored
+#: checkouts, generated corpora) that would exhaust memory on the shingle
+#: index; ``analyze`` raises :class:`SimilarityScanTooLarge` instead.
+MAX_SCAN_FILES = 20000
+#: Shingle hashes shared by more files than this carry no duplicate
+#: signal (boilerplate) and are skipped when building pair candidates.
+_MAX_POSTINGS = 100
 DEFAULT_DIRS: tuple[str, ...] = (".",)
 DEFAULT_INCLUDE: tuple[str, ...] = ("**/*.md",)
 DEFAULT_EXCLUDE: tuple[str, ...] = (
@@ -56,6 +74,7 @@ DEFAULT_EXCLUDE: tuple[str, ...] = (
     "build/**",
     "coverage/**",
     "node_modules/**",
+    ".worktrees/**",
 )
 FORMAT_CHOICES = (DEFAULT_FORMAT, "json")
 
@@ -267,25 +286,49 @@ def tokens_for(content: str, profile: str, path: str = "") -> list[str]:
     return _generic_code_tokens(content)
 
 
-def shingles_for(content: str, profile: str, path: str = "") -> frozenset[str]:
-    """The set of 8-token shingles, empty below one shingle (such files
-    carry no similarity signal). Content is normalized for the profile
-    first — raw bytes would make unrelated files look alike."""
+# 64-bit FNV-1a parameters for shingle hashing. Values kept in 63 bits so
+# the hash is identical on every platform (Python ints are arbitrary
+# precision — the mask makes it exactly 64-bit FNV, non-negative).
+_FNV_OFFSET_BASIS = 0x811C9DC5
+_FNV_PRIME = 0x100000001B3
+_UINT64 = 0xFFFFFFFFFFFFFFFF
+_HASH_MASK = 0x7FFFFFFFFFFFFFFF
+# Separator unit terminated after every token, so `["ab", "c"]` and
+# `["a", "bc"]` hash differently.
+_SHINGLE_SEPARATOR = 0x1F
+
+
+def shingle_hash(tokens: list[str], start: int) -> int:
+    """64-bit FNV-1a of the ``SHINGLE_SIZE`` tokens starting at ``start``,
+    each terminated by a separator unit. Hashing keeps 8 bytes per shingle
+    instead of the full joined token string — the shingle sets of a large
+    tree otherwise retain gigabytes of strings (upstream ad4f27b9f14d).
+    """
+    digest = _FNV_OFFSET_BASIS
+    for token in tokens[start : start + SHINGLE_SIZE]:
+        for byte in token.encode("utf-8"):
+            digest = ((digest ^ byte) * _FNV_PRIME) & _UINT64
+        digest = ((digest ^ _SHINGLE_SEPARATOR) * _FNV_PRIME) & _UINT64
+    return digest & _HASH_MASK
+
+
+def shingles_for(content: str, profile: str, path: str = "") -> frozenset[int]:
+    """The set of 8-token shingle hashes, empty below one shingle (such
+    files carry no similarity signal). Content is normalized for the
+    profile first — raw bytes would make unrelated files look alike."""
     tokens = tokens_for(normalize(content, profile, path), profile, path)
     if len(tokens) < SHINGLE_SIZE:
         return frozenset()
-    return frozenset(
-        "\x1f".join(tokens[i : i + SHINGLE_SIZE]) for i in range(len(tokens) - SHINGLE_SIZE + 1)
-    )
+    return frozenset(shingle_hash(tokens, i) for i in range(len(tokens) - SHINGLE_SIZE + 1))
 
 
-def intersection_count(a: frozenset[str] | set[str], b: frozenset[str] | set[str]) -> int:
-    """The number of shingles present in both sets."""
+def intersection_count(a: frozenset[int] | set[int], b: frozenset[int] | set[int]) -> int:
+    """The number of shingle hashes present in both sets."""
     small, large = (a, b) if len(a) <= len(b) else (b, a)
     return sum(1 for shingle in small if shingle in large)
 
 
-def jaccard(a: frozenset[str] | set[str], b: frozenset[str] | set[str]) -> float:
+def jaccard(a: frozenset[int] | set[int], b: frozenset[int] | set[int]) -> float:
     """Intersection over union: 1.0 identical, 0.0 disjoint."""
     if not a or not b:
         return 0.0
@@ -293,7 +336,7 @@ def jaccard(a: frozenset[str] | set[str], b: frozenset[str] | set[str]) -> float
     return shared / (len(a) + len(b) - shared)
 
 
-def containment(a: frozenset[str] | set[str], b: frozenset[str] | set[str]) -> float:
+def containment(a: frozenset[int] | set[int], b: frozenset[int] | set[int]) -> float:
     """Intersection over the smaller set: how much of the smaller file the
     larger one reproduces (Jaccard stays low when one file is small)."""
     if not a or not b:
@@ -303,10 +346,10 @@ def containment(a: frozenset[str] | set[str], b: frozenset[str] | set[str]) -> f
 
 @dataclass(frozen=True, slots=True)
 class SimilarityFile:
-    """One analyzed file: its project-relative path and shingle set."""
+    """One analyzed file: its project-relative path and shingle hash set."""
 
     path: str
-    shingles: frozenset[str]
+    shingles: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +400,23 @@ class SimilarityReport:
         return best
 
 
+class SimilarityScanTooLarge(Exception):
+    """The scan scope matched more files than ``MAX_SCAN_FILES``; raised
+    instead of exhausting memory on the shingle index. Narrow the gate's
+    ``--include``/``dirs`` or extend ``--exclude``."""
+
+    def __init__(self, matched: int, max_files: int) -> None:
+        super().__init__(matched, max_files)
+        self.matched = matched
+        self.max_files = max_files
+
+    def __str__(self) -> str:
+        return (
+            f"similarity scan scope matches {self.matched} files, above the "
+            f"{self.max_files}-file safety cap: narrow `include`/`dirs` or extend `exclude`"
+        )
+
+
 class _UnionFind:
     """Union-find over file paths, with path compression."""
 
@@ -394,11 +454,16 @@ def analyze(
 
     Files below ``min_shingles`` are skipped; pairs cross when Jaccard >=
     ``jaccard_threshold`` OR containment >= ``containment_threshold``.
+    Raises :class:`SimilarityScanTooLarge` when the scope matches more
+    than ``MAX_SCAN_FILES`` files.
     """
     root = Path(root)
+    collected = _collect(root, dirs, include, exclude)
+    if len(collected) > MAX_SCAN_FILES:
+        raise SimilarityScanTooLarge(len(collected), MAX_SCAN_FILES)
     analyzed: list[SimilarityFile] = []
     skipped = 0
-    for rel, path in _collect(root, dirs, include, exclude):
+    for rel, path in collected:
         content = path.read_text(encoding="utf-8", errors="replace")
         shingles = shingles_for(content, profile_for(rel), rel)
         if len(shingles) < min_shingles:
@@ -460,19 +525,52 @@ def _pairs_over_thresholds(
     jaccard_threshold: float,
     containment_threshold: float,
 ) -> tuple[SimilarityPair, ...]:
-    """All pairs crossing either threshold, strongest Jaccard first."""
-    pairs: list[SimilarityPair] = []
-    for i in range(len(files)):
-        for j in range(i + 1, len(files)):
-            # ponytail: O(n²) pairwise scan — MinHash/LSH when corpora get big.
-            first, second = files[i], files[j]
-            j_score = jaccard(first.shingles, second.shingles)
-            c_score = containment(first.shingles, second.shingles)
-            if j_score < jaccard_threshold and c_score < containment_threshold:
-                continue
-            pairs.append(SimilarityPair(first.path, second.path, j_score, c_score))
+    """All pairs crossing either threshold, strongest Jaccard first.
+
+    Comparisons are candidate-pruned through an inverted shingle index: a
+    pair can only cross a positive threshold when the two files share at
+    least one shingle hash, so exact Jaccard / containment run on
+    candidate pairs only. The naive all-pairs loop is quadratic in the
+    file count and made large trees effectively hang (upstream ad4f27b9f14d).
+    """
+    pairs = []
+    for first, second in _candidates(files):
+        j_score = jaccard(first.shingles, second.shingles)
+        c_score = containment(first.shingles, second.shingles)
+        if j_score < jaccard_threshold and c_score < containment_threshold:
+            continue
+        pairs.append(SimilarityPair(first.path, second.path, j_score, c_score))
     pairs.sort(key=lambda pair: (-pair.jaccard, pair.a, pair.b))
     return tuple(pairs)
+
+
+def _candidates(files: list[SimilarityFile]) -> Iterable[tuple[SimilarityFile, SimilarityFile]]:
+    """Unique file pairs sharing at least one shingle hash, via an
+    inverted index. Pairs are emitted in index order; deduplicated with a
+    set of flattened ``(i, j)`` keys that grows with the candidate count,
+    not the quadratic pair space."""
+    index = _inverted_index(files)
+    seen: set[int] = set()
+    width = len(files)
+    for postings in index.values():
+        if len(postings) < 2 or len(postings) > _MAX_POSTINGS:
+            continue  # boilerplate hashes carry no duplicate signal
+        for x in range(len(postings)):
+            for y in range(x + 1, len(postings)):
+                i, j = postings[x], postings[y]
+                if i * width + j in seen:
+                    continue
+                seen.add(i * width + j)
+                yield files[i], files[j]
+
+
+def _inverted_index(files: list[SimilarityFile]) -> dict[int, list[int]]:
+    """Maps every shingle hash to the indexes of the files containing it."""
+    index: dict[int, list[int]] = {}
+    for i, file in enumerate(files):
+        for shingle in file.shingles:
+            index.setdefault(shingle, []).append(i)
+    return index
 
 
 def _clusters(
@@ -586,7 +684,8 @@ def _build_parser() -> UsageErrorParser:
 def run(argv: list[str], project_root: Path) -> int:
     """Entry point for ``crap4py similarity [options] [dirs...]``.
 
-    Informational: always exits 0; usage/config errors exit 1.
+    Informational: always exits 0; usage/config errors exit 1, including
+    a scan scope above ``MAX_SCAN_FILES``.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -603,15 +702,21 @@ def run(argv: list[str], project_root: Path) -> int:
         config.validate()
     except ValueError as exc:
         parser.error(str(exc))  # exits 1
-    report = analyze(
-        project_root,
-        dirs=config.dirs,
-        include=config.include,
-        exclude=config.exclude,
-        jaccard_threshold=config.jaccard,
-        containment_threshold=config.containment,
-        min_shingles=config.min_shingles,
-    )
+    try:
+        report = analyze(
+            project_root,
+            dirs=config.dirs,
+            include=config.include,
+            exclude=config.exclude,
+            jaccard_threshold=config.jaccard,
+            containment_threshold=config.containment,
+            min_shingles=config.min_shingles,
+        )
+    except SimilarityScanTooLarge as exc:
+        # Loud, actionable usage error — an over-broad scope would exhaust
+        # memory on the shingle index (usage errors exit 1).
+        print(f"similarity: {exc}", file=sys.stderr)
+        return 1
     if config.format == "json":
         _print_json(report, config)
     else:
