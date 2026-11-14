@@ -409,26 +409,45 @@ Source-instrumentation profiler (port of the crap4dart profiler):
    defines `run`) never merge into one timing row or mis-attribute
    (0.9.2-era attribution fix).
 3. Injects `_crap_collector.py`, aggregating `(calls, totalMicros,
-   totalSelfMicros, minMicros, maxMicros)` per key and merging into
-   `.crap_profile.json` via an atomic rename so several test processes
-   combine. Temp file names carry the worker pid; the flush reader
-   retries once around a concurrent rename; records flush every 5 calls
-   and once more at process exit (0.9.2). A flush merges only the
-   records accumulated since the last one — `_STATS` is cleared only
-   after the atomic write succeeds, so a crashed worker keeps everything
-   it flushed and nothing is ever re-added (the 0.9.5 upstream
-   delta-flush fix, already correct here since 0.9.2 — `flush()` /
-   `_atomic_write()` inside `COLLECTOR_SOURCE`, `crap4py/profile.py`).
-   A `threading.Lock` spans the shared-stats update and the flush's
-   read-merge-write: Python tests run real threads (upstream's Dart
-   collector is single-threaded and needs no lock).
+   totalSelfMicros, minMicros, maxMicros)` per key. Flush design
+   (upstream ad4f27b9f14d, observer-effect fix): each WRITER — a test
+   process; threads inside it share one shard — owns a private shard
+   file `<output>.<shardId>.json` holding its CUMULATIVE stats,
+   replaced atomically (temp + rename) on every flush. Shards never
+   read other writers' data, so concurrent writers cannot lose each
+   other's updates by construction; the runner merges all shards at
+   the end (step 5). Nested method exits touch NO filesystem — the
+   outermost exit of a call tree is the only flush point (always, by
+   default: it is the only reliable delivery point for a writer that
+   dies after its last instrumented call), plus a bounded backstop
+   flush every `CRAP_PROFILE_FLUSH_EVERY` calls (default 100000) for
+   stuck stacks. `CRAP_PROFILE_FLUSH_MS` (default 0) throttles
+   outermost flushes to at most one per interval — an OPT-IN trade:
+   extremely outermost-heavy loops stay I/O-light but the tail after
+   the last throttled exit is lost unless an explicit `flush()` runs
+   (keep 0 unless that shape actually hurts). No timers — flushing
+   rides the exits and `atexit`. A shard write is O(#methods), never
+   O(#calls). The `threading.Lock` spans the shared-stats update and
+   the whole snapshot+write of THIS writer's shard (Python tests run
+   real threads; cross-process writers never touch each other's
+   files). Every flush also records a `#flushes` diagnostic key —
+   skipped by the merge (below).
 4. Runs `python -m pytest [-k <pattern>]` in the copy (fallback:
-   `python -m unittest discover [-s tests] [-k <pattern>]`); a failing run
-   warns on stderr but any flushed timings are still reported. The test
-   commands always run inside the temp copy (cwd), never against the
-   original sources.
+   `python -m unittest discover [-s tests] [-k <pattern>]`); a failing
+   run is reported on stderr prefixed `TESTS FAILED` — with the LAST 30
+   lines of the runner output, not the first (test runners print
+   progress for every file before the failure, so the error lives at
+   the tail) — and must never be mistakable for the profile command's
+   own threshold verdict; any flushed timings are still reported. The
+   test commands always run inside the temp copy (cwd), never against
+   the original sources.
 5. Attributes timings to the method inventory of the instrumented set;
-   unmatched keys are ignored. Temp dir removed afterwards.
+   unmatched keys are ignored. The merge reads `<output>` itself (if it
+   exists — legacy/hand-written writers) plus every
+   `<output>.<shardId>.json` beside it, skipping in-flight `.tmp` files,
+   corrupt/non-JSON shards and `#`-prefixed diagnostic keys; per-method
+   stats merge as sum(calls, totals), min(minima), max(maxima).
+   Temp dir removed afterwards.
 
 Console table sorted by TOTAL desc, limited to `--top` rows (default 20):
 
@@ -472,17 +491,18 @@ only that file's methods.
 Skipped from upstream: `--tags`/`--exclude-tags` (no tag concept in
 pytest/unittest) and config-file options (ports have no config system).
 
-Ported from 0.9.5's `e2ce5e9`: the collector flushes on the outermost
-method exit as well as every 5 records — a completed top-level call is a
-natural checkpoint, so short runs don't lose their tail (`flush()` is
-public in the injected collector and also rides `atexit`). Upstream's
-flutter_test pending-timer workaround (no 1s flush timer) has no Python
-analog. Also skipped: commit `b789739`'s icon/PNG assets (upstream
-branding only — the port's own icon landed separately), and the upstream
-version/CHANGELOG bump (release-please owns versions here). The 0.9.5
-delta-flush fix needs no port — this collector has merged only unflushed
-deltas since 0.9.2 (`flush()` clears `_STATS` only after
-`_atomic_write()` succeeds, `crap4py/profile.py` `COLLECTOR_SOURCE`).
+Ported from 0.9.5's `e2ce5e9` and superseded by ad4f27b9f14d (0.30.1):
+the collector flushes at the outermost method exit (every outermost
+exit by default — the every-5-records flush and the read-merge-write
+into ONE shared file were the observer-effect bug: file I/O inside hot
+loops inflated inclusive times and the shared-file merge lost
+concurrent writers' deltas; per-writer cumulative shards make lost
+updates impossible by design). `flush()` is public in the injected
+collector and also rides `atexit`. Upstream's flutter_test
+pending-timer workaround (no 1s flush timer) has no Python analog.
+Also skipped: commit `b789739`'s icon/PNG assets (upstream branding
+only — the port's own icon landed separately), and the upstream
+version/CHANGELOG bump (release-please owns versions here).
 
 ## 21. `test-assertions`
 
@@ -914,13 +934,18 @@ crap4py similarity [--format console|json] [--jaccard N] [--containment N]
 
 File-level near-duplicate detection over any text corpus (markdown, source
 code of any language, raw text) — port of the crap4dart `similarity` gate +
-command (upstream 2b21966, §11.23). Each scanned file is normalized per its
-profile — markdown (`.md`/`.markdown`/`.mdx`) drops fenced code blocks,
-code (a 25-extension family) drops comments and import-family lines and
-maps literals to placeholders, raw is compared as-is — tokenized
-(markdown/raw: 2+ letter words lowercased; code: identifiers lowercased
-and literal placeholders), and represented as the set of its 8-token
-shingles.
+command (upstream 2b21966, §11.23; large-tree memory fixes from
+ad4f27b9f14d). Each scanned file is normalized per its profile — markdown
+(`.md`/`.markdown`/`.mdx`) drops fenced code blocks, code (a 25-extension
+family) drops comments and import-family lines and maps literals to
+placeholders, raw is compared as-is — tokenized (markdown/raw: 2+ letter
+words lowercased; code: identifiers lowercased and literal placeholders),
+and represented as the set of its 8-token shingle HASHES: 64-bit FNV-1a
+over the token stream with one separator unit terminated after every
+token, so `["ab", "c"]` and `["a", "bc"]` hash differently (Python ints
+are arbitrary precision — the hash is masked to exactly 64 bits,
+non-negative; hashing keeps 8 bytes per shingle instead of the joined
+string, which otherwise retains gigabytes on a large tree).
 
 Two files are *similar* when Jaccard(A,B) >= `--jaccard` (default 0.8) OR
 containment(A,B) >= `--containment` (default 0.95; intersection over the
@@ -929,6 +954,20 @@ pairs merge transitively into clusters (union-find with path compression),
 and each cluster reports the pairs that built it. Files with fewer than
 `--min-shingles` shingles (default 50) are skipped — tiny files carry no
 reliable signal and never enter comparison.
+
+Comparisons are candidate-pruned through an inverted shingle index
+(ad4f27b9f14d): a pair can only cross a positive threshold when the two
+files share at least one shingle hash, so exact Jaccard/containment run
+only on pairs the index proposes — shingle-hash → file postings lists;
+postings shared by more than 100 files carry no duplicate signal
+(boilerplate) and are skipped; proposed pairs are deduplicated. The naive
+all-pairs loop is quadratic in the file count and made large trees
+effectively hang. A scope matching more than `MAX_SCAN_FILES` = 20000
+files raises before any content is read: the command reports
+`similarity: similarity scan scope matches N files, above the 20000-file
+safety cap: narrow \`include\`/\`dirs\` or extend \`exclude\`` on stderr
+and exits 1 (the one non-zero, non-usage-parser exit — an over-broad
+scope would exhaust memory on the shingle index).
 
 Profiles are extension-mapped. The code profile is language-agnostic: the
 generic engine strips block/line comments (`//`, `#`, `--`, `;`) and
@@ -947,11 +986,12 @@ and missing directories are skipped silently. `--include` globs (default
 `**/*.md`; a leading `**/` also matches at the root, fnmatch semantics
 otherwise) and `--exclude` globs (fnmatch on project-relative paths,
 defaults `.git/**`, `.venv/**`, `build/**`, `coverage/**`,
-`node_modules/**` — upstream's list with `.dart_tool/**` traded for
-`.venv/**`) drop files.
+`node_modules/**`, `.worktrees/**` — upstream's list with `.dart_tool/**`
+traded for `.venv/**` and the fleet worktree dir added) drop files.
 
 The command is informational and ALWAYS exits 0 — the exploration tool for
-tuning thresholds; usage/flag errors exit 1. There is no config file and
+tuning thresholds; usage/flag errors exit 1, and so does a scan scope
+above `MAX_SCAN_FILES` (previous paragraph). There is no config file and
 no `check` pipeline (§32), so upstream's gate config maps to the
 strictly validated kebab-case flags: `--jaccard`/`--containment` outside
 0.0–1.0, `--min-shingles` < 1, an unknown `--format` and any unknown flag
@@ -1003,7 +1043,10 @@ reproducibility) and parses the plugin's JSONL log:
   (GROSS volume); Python has no cheap gross-allocation counter, so churn
   here is the peak live footprint of the window (alloc-and-free cycles
   net out) and `retained` = signed net traced-memory delta — the
-  old-gen-growth / leak-suspect analog. GC counts are machine-dependent
+  old-gen-growth / leak-suspect analog. Positive growth is a leak SUSPECT
+  only: much of it is reclaimed on teardown, so judge leaks by
+  post-teardown/steady-state retained growth, never by this number
+  alone. GC counts are machine-dependent
   and never a metric (upstream's conclusion, ported);
 - each test window covers pytest's `runtest_protocol` — setup + call +
   teardown, the analog of upstream's `testStart`..`testDone` — so fixture

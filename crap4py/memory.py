@@ -14,7 +14,10 @@ new-gen MB — GROSS volume that flowed through — while Python has no cheap
 gross-allocation counter, so churn here is the PEAK LIVE traced footprint
 of the test window (deterministic per code; alloc-and-free cycles net out)
 and ``retained`` is the signed net delta — the old-gen-growth / leak
-suspect analog. Upstream 0.17.0's ``totalAllocatedMb`` maps to
+SUSPECT analog: positive growth is a suspect only (much of it is
+reclaimed on teardown), so judge leaks by post-teardown/steady-state
+retained growth, never by this number alone. Upstream 0.17.0's
+``totalAllocatedMb`` maps to
 ``total_allocated_mb`` = ``total_churn_mb``: with no cumulative gross
 counter, the peak-live proxy is the honest allocation volume (mirrors
 the dart engine, where allocated MB is the reclaimed-new-gen churn).

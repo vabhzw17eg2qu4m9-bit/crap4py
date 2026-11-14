@@ -123,6 +123,15 @@ call stack, runs the test suite (pytest, unittest fallback) against the
 instrumented copy, and reports exact per-method inclusive (TOTAL) and
 self (SELF) timing.
 
+The collector is I/O-free in hot loops: nested exits write nothing;
+every WRITER (test process) flushes its own cumulative shard file
+(`<output>.<shardId>.json`, atomic rename) only at outermost exits —
+plus a backstop every 100000 calls and an opt-in `CRAP_PROFILE_FLUSH_MS`
+throttle — and the runner merges all shards at the end (sum calls and
+totals, min minima, max maxima). A failing test run is reported as
+`TESTS FAILED` with the LAST 30 lines of runner output, so it is never
+mistakable for a `--threshold` verdict.
+
 ```bash
 crap4py profile                      # profile the whole suite
 crap4py profile --name "parser"      # only run tests matching (pytest -k)
@@ -576,13 +585,18 @@ line- or file-scoped can address them), `similarity`/`memory`
 
 Scans any text corpus (markdown docs, source files) for file-level
 near-duplicates — port of the crap4dart `similarity` gate + command
-(upstream 2b21966) and the exploration tool for tuning the thresholds
-before relying on them. Two files are *similar* when their 8-token shingle
-sets overlap enough: Jaccard (overall overlap, `--jaccard`, default 0.8)
-or containment (the smaller file largely inside the bigger one,
-`--containment`, default 0.95). Comments, imports, code fences and literal
-values are normalized away, so only real content counts. Informational:
-always exits 0.
+(upstream 2b21966, large-tree fixes ad4f27b9f14d) and the exploration
+tool for tuning the thresholds before relying on them. Two files are
+*similar* when their 8-token shingle hash sets overlap enough: Jaccard
+(overall overlap, `--jaccard`, default 0.8) or containment (the smaller
+file largely inside the bigger one, `--containment`, default 0.95).
+Comments, imports, code fences and literal values are normalized away,
+so only real content counts. Comparisons run only on candidate pairs
+from an inverted shingle index (pairs sharing a shingle hash; postings
+over 100 files are skipped as boilerplate), and a scope matching more
+than 20000 files is a loud error naming the narrowing options instead
+of a memory exhaustion. Informational: always exits 0 (the scan cap
+exits 1).
 
 ```bash
 crap4py similarity                          # project's markdown, console report
@@ -600,7 +614,8 @@ lines and map literals to `S`/`N` placeholders — `.py` via the stdlib
 as-is. Similar pairs merge transitively into clusters. Files below
 `--min-shingles` (default 50) are skipped. `--include`/`--exclude` are
 fnmatch globs on project-relative paths (default exclusions: `.git/`,
-`.venv/`, `build/`, `coverage/`, `node_modules/`). There is no config file
+`.venv/`, `build/`, `coverage/`, `node_modules/`, `.worktrees/`). There
+is no config file
 — the kebab-case flags are the whole config surface, strictly validated.
 Dogfood: measured clean on this repo's own md corpus at jaccard 0.6 /
 containment 0.9.
@@ -619,7 +634,10 @@ Semantics differ from the Dart VM's, stated honestly: upstream churn is
 reclaimed new-gen MB (gross volume that flowed through); Python has no
 cheap gross-allocation counter, so churn here is the peak live footprint
 of the test window (alloc-and-free cycles net out) and retained is the
-signed net delta — the old-gen-growth analog. Windows cover
+signed net delta — the old-gen-growth analog. A leak SUSPECT only: much
+of a positive delta is reclaimed on teardown, so judge leaks by
+post-teardown/steady-state retained growth, never by this number alone.
+Windows cover
 setup + call + teardown (the analog of `testStart`..`testDone`), so
 fixture allocations are attributed to the test; collection/import
 allocations and out-of-window GCs land in a separate unattributed bucket
@@ -780,8 +798,8 @@ be files or directories.
 
 | Code | Meaning                                                                |
 |------|------------------------------------------------------------------------|
-| `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational). |
-| `1`  | Usage error (bad flags, `--changed` + paths or `--diff-base`, unknown `--diff-base` ref/any git diff failure, `--strict` with missing/unreadable/empty/unparseable coverage or a missing explicit path, unreadable source). |
+| `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational) except an over-broad scan scope (below). |
+| `1`  | Usage error (bad flags, `--changed` + paths or `--diff-base`, unknown `--diff-base` ref/any git diff failure, `--strict` with missing/unreadable/empty/unparseable coverage or a missing explicit path, unreadable source); `similarity` scan scope above 20000 files (`similarity: similarity scan scope matches N files, above the 20000-file safety cap: narrow \`include\`/\`dirs\` or extend \`exclude\`` on stderr). |
 | `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error`, `enum-name-contract --severity error` and `collapsible-flow --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
