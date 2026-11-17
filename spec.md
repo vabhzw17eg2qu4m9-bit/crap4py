@@ -41,6 +41,7 @@ crap4py mutation [opts] [p..]  Mutation testing: re-run tests per mutated operat
 crap4py similarity [opts] [d..] Scan for near-duplicate files (console/json); exits 0.
 crap4py memory [opts] [p..]   Run tests under tracemalloc; per-test churn report, exits 0.
 crap4py tuple-signatures [p.] Flag inline tuple annotations in function signatures.
+crap4py implicit-state [p..]   Flag implicit FSMs: flag clusters, scattered mutators, flag combos.
 crap4py skill                Print the crap4py profiling skill.
 crap4py --help               Print usage; exit 0.
 crap4py --coverage <path>    Override the coverage file (default: coverage.json).
@@ -806,6 +807,12 @@ earlier method of the same file invalidates only that method's sites. The
 envelope carries a meta guard — tool version, sorted enabled operators,
 comma-joined `--test-args` — and any mismatch, a version mismatch, a corrupt
 file, or a missing file starts from an empty cache (full re-execution).
+A discarded cache surfaces its reason instead of degenerating silently
+into a full re-run that looks identical to a warm one (port of upstream
+34e2163080): `crap4py mutation: mutation cache discarded: <reason>` on
+stderr, where `<reason>` is `corrupt JSON`, `not a JSON object`,
+`version mismatch (expected <V>)` or `meta mismatch (operators or test
+args changed)`; a missing file stays silent (nothing was discarded).
 Methods absent from the scanned scope (deleted or excluded files) are
 pruned; sites outside every function are never cached. The merged cache is
 persisted after the run; the file is disposable build output and
@@ -845,15 +852,21 @@ cached. `--scope-tests` is deliberately not part of the cache meta
 guard. The summary counts the scoped sites owing confirmation and the
 re-confirmed kills: `; test-scoped N (M re-confirmed killed)`.
 
-End-of-run tree integrity check (port of upstream 8b2e8e8): the engine
-snapshots every file it is about to mutate before the mutant loop and, in
-an outer `finally`, re-verifies the whole tree against those snapshots
-even when the loop dies mid-mutant. A per-site restore can be defeated
-out-of-process (external write, killed interpreter), so any drift is
-re-restored AND surfaced: `INTEGRITY: re-restored after run: <files>` in
-the summary plus a stderr warning (`working tree did not restore cleanly …
-Treat this run as suspect and re-run`). An empty violation list is the
-healthy case and stays silent.
+End-of-run tree integrity check (port of upstream 8b2e8e8; verdict
+hardening 34e2163080): the engine snapshots every file it is about to
+mutate before the mutant loop and, in an outer `finally`, re-verifies the
+whole tree against those snapshots even when the loop dies mid-mutant. A
+per-site restore can be defeated out-of-process (external write, killed
+interpreter), so any drift is re-restored AND surfaced: `INTEGRITY:
+re-restored after run: <files>` in the summary plus a stderr warning
+(`working tree did not restore cleanly … Treat this run as suspect and
+re-run`). Integrity violations additionally force the verdict to fail —
+one file-level violation per re-restored file (`<file>: working tree did
+not restore cleanly after the mutation run — the file was re-restored;
+treat the run as suspect and re-run`, no line, riding after the survivor
+violations) — so a perfect outcome table can no longer pass a run that
+left a mutant behind. An empty violation list is the healthy case and
+stays silent.
 
 File selection: like every gate, explicit `paths` (files/dirs, expanded to
 `.py`) replace the default §4 selection; `--coverage` (default
@@ -1351,8 +1364,9 @@ scan, before printing and exit-code aggregation. Ignorable gate ids:
 
 Not ignorable: `folder-structure` (directory-level findings — nothing
 line- or file-scoped can address them), `similarity`/`memory`
-(informational, always exit 0), `profile`/`skill` (not gates). A gate
-family a port lacks is simply not ignorable there.
+(informational, always exit 0), `profile`/`skill` (not gates),
+`implicit-state` (upstream `ignorable: false` — markers do not apply). A
+gate family a port lacks is simply not ignorable there.
 
 Host adaptations vs upstream: `//` → `#` in the match rules and the
 whole-line prefixes; marker matching stays textual on the raw source
@@ -1682,3 +1696,103 @@ per-gate `severity` config key (§33); ignore markers
 (`# ignore:collapsible_flow` / `# crap:ignore`) apply per §31 (the
 gate is ignorable). Every violation shall carry the file and line of
 the offending construct.
+
+## 38. `implicit-state`
+
+```
+crap4py implicit-state [paths...] [--severity warning|error]
+                       [--min-flags N] [--min-mutators N]
+```
+
+The `implicit_state` gate (34e2163080 — port of crap4dart's
+`implicit_state` gate) shall surface *implicit finite state machines* —
+lifecycle logic spread over boolean flag clusters, multi-mutator status
+fields and conditions that branch on flag combinations — using
+name-shape heuristics on parsed (unresolved) sources, one scan per class
+(nested classes are separate scans). A cluster of mutable lifecycle
+flags mutated from several functions behaves like a state machine with
+unmodelled combination states; a `status`-like field assigned from many
+functions is an FSM whose transitions are scattered; an `if` branching
+on a flag combination reads an implicit state. All three make invalid
+states representable and transitions unauditable — the fix is an
+explicit model (an `Enum`, a sealed hierarchy of state classes). Four
+detections:
+
+1. **Scattered lifecycle flag** — a single matching `bool` field
+   mutated from at least `--min-mutators` (default 2) distinct
+   functions; per-field violation at the declaration line:
+   `lifecycle flag '<name>' is mutated from <N> places — part of an
+   implicit state machine`.
+2. **Scattered status field** — an instance field named `status`,
+   `state`, `phase`, `stage`, `mode` or `lifecycle` (exact lowercased
+   match, ANY type) assigned from at least `--min-mutators` distinct
+   functions; per-field violation at the declaration line:
+   `status field '<name>' is mutated from <N> places — implicit
+   transitions; centralize them`.
+3. **Boolean-cluster FSM** — at least `--min-flags` (default 3)
+   assigned lifecycle `bool` fields of one class where at least one is
+   mutated from at least `--min-mutators` distinct functions; one
+   class-level violation at the class line: `class holds <N> lifecycle
+   flags mutated across methods — a boolean-cluster state machine; model
+   it with an enum/sealed state`. Upstream's code hardcodes `>= 2` in
+   the scattered condition where its spec §11.30 says the
+   `min_mutators` knob; this port follows the spec (the knob) — the two
+   agree at the defaults.
+4. **Flag-combination condition** — an `if` test (each `elif` is its
+   own `If` node; Python has no elif node) reading two or more declared
+   lifecycle flags of the scanned class; per-condition violation at the
+   `if` line: `condition branches on <N> lifecycle flags (<a, b>) — an
+   implicit state combination; model the states explicitly`.
+
+Name shapes (host-mapped from Dart's lowerCamelCase): the
+`is`/`has`/`was`/`will`/`should`/`can` + `Capital` prefixes map to the
+snake_case prefixes `is_`/`has_`/`was_`/`will_`/`should_`/`can_`
+(`is_loading`, `has_failed`) AND the camelCase spellings (`isLoading`)
+are accepted too, since Python code may carry them; the lifecycle
+keyword suffixes (`Loaded`, `Started`, `Stopped`, `Disposed`, `Pending`,
+`Ready`, `Done`, `Failed`, `Scheduled`, `Driving`, `Running`, `Closed`,
+`Opened`, `Initialized`, `Connected`, `Completed`, `Submitted`,
+`Finished`, `Canceled`, `Cancelled`, `Active`, `Busy`, `Alive`,
+`Mounted`, `Broken`, `Dirty`, `Locked`, `Expired`, `Cached`) map to
+`_loaded`/… snake_case tails AND the raw camelCase tails
+(`shard_loaded`, `shardLoaded`). Status names match exactly
+(lowercased): `stateful_mode` does not match.
+
+Eligibility and counting rules:
+
+- A lifecycle flag is a class-body annotated `bool` instance field
+  (`is_done: bool`) or a class-body assignment of `True`/`False`
+  (`is_done = False`). `ClassVar`/`Final`-annotated fields never count
+  (upstream: `final`/`const`/`static`).
+- A status field is any other class-body annotated field or class-body
+  assignment whose name matches; immutability annotations exclude it
+  too.
+- Local variables and parameters are never fields: a name assignment
+  inside a function body is a local (Python has no implicit-this
+  assignment, so upstream's bare-identifier mutation sites have no
+  Python analog — only attribute assignments count).
+- Mutation sites count by NAME shape: any `X.attr = …` — plain,
+  annotated-with-value, or augmented (`+=`) — whose attribute name
+  matches a declared field of the scanned class counts, regardless of
+  the target object (upstream counts `SimpleIdentifier`,
+  `PropertyAccess` and `PrefixedIdentifier` targets alike). Each site
+  is attributed to the enclosing function (a closure attributes to its
+  enclosing method, as upstream); distinct function NAMES are counted.
+- Conditions count `self.attr` reads of DECLARED lifecycle flags only
+  (`Attribute` on `Name('self')`): Python has no bare implicit-self
+  field reads, so this is the host-map of upstream's bare-identifier
+  rule — reads through other objects (`other.is_ready`) never count.
+  Only `if` statements are visited (`while`/`for`/ternary conditions
+  are not, as upstream).
+
+Default severity: `warning` — violations are reported
+(`[WARN] file:line: message`) and the exit code is `0`; `--severity
+error` makes violations exit `2`. `--min-flags`/`--min-mutators` stand
+in for upstream's per-gate `min_flags`/`min_mutators` config keys
+(§32): unknown flags are usage errors (exit 1), non-integer thresholds
+are usage errors. The gate is NOT ignorable (upstream `ignorable:
+false`, §31): ignore markers do not apply. Detection is deliberately
+syntactic: it cannot prove reachability, dead states, races or
+cross-layer inconsistency — it marks candidates for an explicit-model
+refactor. Every violation shall carry the file and line of the
+offending construct.

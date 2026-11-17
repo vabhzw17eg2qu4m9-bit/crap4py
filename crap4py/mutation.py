@@ -273,22 +273,41 @@ class MutationCache:
         return f"{rel_path}#{method_name}"
 
     @classmethod
-    def load(cls, path: Path, meta: MutationCacheMeta) -> MutationCache:
+    def load(
+        cls, path: Path, meta: MutationCacheMeta, on_discard: Callable[[str], None] | None = None
+    ) -> MutationCache:
         """Load the cache at ``path`` under ``meta``.
 
         A missing, corrupt, outdated or meta-mismatched file yields an
         empty cache — a full re-execution under the current semantics.
+        ``on_discard`` receives a one-line reason whenever the previous
+        cache is thrown away: a silent full re-run looks identical to a
+        warm one and hides config drift.
         """
         try:
             decoded = json.loads(path.read_text())
-        except (OSError, ValueError):
+        except OSError:
             return cls(meta)
-        if not isinstance(decoded, dict) or decoded.get("version") != MUTATION_CACHE_VERSION:
-            return cls(meta)
+        except ValueError:
+            return cls._discard(meta, on_discard, "corrupt JSON")
+        if not isinstance(decoded, dict):
+            return cls._discard(meta, on_discard, "not a JSON object")
+        if decoded.get("version") != MUTATION_CACHE_VERSION:
+            return cls._discard(
+                meta, on_discard, f"version mismatch (expected {MUTATION_CACHE_VERSION})"
+            )
         stored = MutationCacheMeta.from_dict(decoded.get("meta") or {})
         if stored != meta:
-            return cls(meta)
+            return cls._discard(meta, on_discard, "meta mismatch (operators or test args changed)")
         return cls(meta, _read_methods(decoded.get("methods")))
+
+    @staticmethod
+    def _discard(
+        meta: MutationCacheMeta, on_discard: Callable[[str], None] | None, reason: str
+    ) -> MutationCache:
+        if on_discard is not None:
+            on_discard(f"mutation cache discarded: {reason}")
+        return MutationCache(meta)
 
     def replay_kill(self, ref: MethodRef, site: MutationSite) -> CachedOutcome | None:
         """The cached killed outcome matching ``site``, or ``None`` (must execute).
@@ -437,10 +456,11 @@ class MutationSite:
 
 @dataclass(frozen=True, slots=True)
 class MutationViolation:
-    """A single survived-mutant finding."""
+    """A single survived-mutant finding (``line`` is None for file-level
+    findings such as integrity violations)."""
 
     file: str
-    line: int
+    line: int | None
     message: str
 
 
@@ -1297,10 +1317,11 @@ def scan_files(
         )
     except MutationUnavailable as exc:
         return MutationResult((), f"skipped: {exc}")
-    if run.integrity:
+    integrity = tuple(_rel(Path(path), root) for path in run.integrity)
+    if integrity:
         print(
             f"crap4py mutation: working tree did not restore cleanly "
-            f"({len(run.integrity)} file(s) re-restored: {', '.join(run.integrity)}). "
+            f"({len(integrity)} file(s) re-restored: {', '.join(integrity)}). "
             "Treat this run as suspect and re-run.",
             file=sys.stderr,
         )
@@ -1309,7 +1330,7 @@ def scan_files(
         scan.uncovered,
         min_score,
         max_survivors,
-        run.integrity,
+        integrity,
         run.scoped,
         run.confirmed,
     )
@@ -1363,7 +1384,11 @@ def _open_cache(
 ) -> CacheSession:
     """Load the digest cache at the project root (empty on any mismatch), bound to the scan."""
     cache_file = root / MUTATION_CACHE_FILE
-    cache = MutationCache.load(cache_file, MutationCacheMeta.current(operators, test_args))
+    cache = MutationCache.load(
+        cache_file,
+        MutationCacheMeta.current(operators, test_args),
+        on_discard=lambda reason: print(f"crap4py mutation: {reason}", file=sys.stderr),
+    )
     return CacheSession(cache, cache_file, scan.site_methods, scan.live_keys)
 
 
@@ -1424,10 +1449,30 @@ def _verdict(
     survived = len(records) - killed
     score = killed / (killed + survived) if records else 1.0
     summary = _summary(records, uncovered, killed, survived, score, integrity, scoped, confirmed)
-    if score >= min_score and survived <= max_survivors:
+    # A perfect outcome table cannot rescue a run that left a mutant behind:
+    # integrity violations force the verdict to fail.
+    passed = score >= min_score and survived <= max_survivors and not integrity
+    if passed:
         return MutationResult((), summary)
     return MutationResult(
-        _survivor_violations(records), f"{summary}; {_survivors_by_category(records)}"
+        _survivor_violations(records) + _integrity_violations(integrity),
+        f"{summary}; {_survivors_by_category(records)}",
+    )
+
+
+def _integrity_violations(integrity: tuple[str, ...]) -> tuple[MutationViolation, ...]:
+    """One violation per re-restored file: the tree was healed, but the
+    outcome of a run that left a mutant behind cannot be trusted."""
+    return tuple(
+        MutationViolation(
+            file=path,
+            line=None,
+            message=(
+                "working tree did not restore cleanly after the mutation run — "
+                "the file was re-restored; treat the run as suspect and re-run"
+            ),
+        )
+        for path in integrity
     )
 
 
@@ -1521,7 +1566,10 @@ def run(argv: list[str], project_root: Path) -> int:
 def _print_result(result: MutationResult) -> int:
     """Violations first, then the one-line summary. Exit 2 iff violations."""
     for violation in result.violations:
-        print(f"{violation.file}:{violation.line}: {violation.message}")
+        where = (
+            f"{violation.file}:{violation.line}" if violation.line is not None else violation.file
+        )
+        print(f"{where}: {violation.message}")
     print(result.summary)
     return 2 if result.violations else 0
 

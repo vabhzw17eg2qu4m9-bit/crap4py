@@ -49,6 +49,7 @@ _SUBCOMMANDS = (
     "identical-branches",
     "enum-name-contract",
     "collapsible-flow",
+    "implicit-state",
 )
 
 _USAGE = """\
@@ -83,6 +84,7 @@ Usage:
   crap4py identical-branches [p.] Flag duplicate conditions/bodies/operands/args in one construct.
   crap4py enum-name-contract [p.] Flag built-in .name contracts inside enum bodies.
   crap4py collapsible-flow [p.]  Flag nested ifs to merge and redundant/flattenable else chains.
+  crap4py implicit-state [p..]   Flag implicit FSMs: flag clusters, scattered mutators, flag combos.
   crap4py skill                Print the crap4py profiling skill.
   crap4py --help               Print this help message.
 
@@ -301,6 +303,7 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         file_naming,
         folder_structure,
         identical_branches,
+        implicit_state,
         loc,
         magic_constants,
         memory,
@@ -350,5 +353,6 @@ def _dispatch_subcommand(args_list: list[str], project_root: Path) -> int | None
         "identical-branches": identical_branches.run,
         "enum-name-contract": enum_name_contract.run,
         "collapsible-flow": collapsible_flow.run,
+        "implicit-state": implicit_state.run,
     }
     return handlers[args_list[0]](args_list[1:], project_root)

@@ -14,10 +14,15 @@ from unittest import mock
 from crap4py.coverage import parse_coverage_dict
 from crap4py.mutation import (
     Killed,
+    MutantRecord,
+    MutationResult,
     MutationSite,
     MutationUnavailable,
+    MutationViolation,
     Survived,
     Timeout,
+    _print_result,
+    _verdict,
     default_test_command,
     derived_test_file,
     detect_sites,
@@ -412,6 +417,47 @@ class GateVerdictTest(unittest.TestCase):
         result = _scan(self.root, self.coverage, runner=runner)
         self.assertEqual(result.violations, ())
         self.assertIn("skipped: python not found on PATH", result.summary)
+
+
+class VerdictIntegrityTest(unittest.TestCase):
+    """Verdict integrity (upstream 34e2163080): a perfect score cannot pass
+    a run that left a mutant behind — integrity violations force the fail."""
+
+    def test_perfect_score_with_integrity_violations_fails(self):
+        verdict = _verdict([], 0, 1.0, 0, ("lib/a.py",))
+        self.assertEqual(len(verdict.violations), 1)
+        violation = verdict.violations[0]
+        self.assertEqual(violation.file, "lib/a.py")
+        self.assertIsNone(violation.line)
+        self.assertIn("suspect", violation.message)
+        self.assertIn("re-restored", violation.message)
+        self.assertIn("INTEGRITY", verdict.summary)
+
+    def test_good_score_without_integrity_passes(self):
+        verdict = _verdict([], 0, 1.0, 0)
+        self.assertEqual(verdict.violations, ())
+        self.assertNotIn("INTEGRITY", verdict.summary)
+
+    def test_integrity_violations_ride_after_survivors(self):
+        site = MutationSite("a.py", 2, None, "arithmetic", "+", "-", 4, 5)
+        records = [MutantRecord(site, Survived, False)]
+        verdict = _verdict(records, 0, 1.0, 0, ("a.py", "b.py"))
+        self.assertEqual(
+            [(v.file, v.line is None) for v in verdict.violations],
+            [("a.py", False), ("a.py", True), ("b.py", True)],
+        )
+
+    def test_integrity_violation_prints_without_a_line(self):
+        result = MutationResult(
+            (MutationViolation("lib/a.py", None, "working tree did not restore cleanly"),),
+            "score 100.0%; INTEGRITY: re-restored after run: lib/a.py",
+        )
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = _print_result(result)
+        self.assertEqual(code, 2)
+        self.assertIn("lib/a.py: working tree did not restore cleanly", buffer.getvalue())
+        self.assertNotIn(":None:", buffer.getvalue())
 
 
 class ChangedLinesTest(unittest.TestCase):
