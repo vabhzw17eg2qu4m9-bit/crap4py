@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.33.0...v0.34.0) (2026-11-17)
+
+
+### Features
+
+* implicit_state gate + mutation verdict/cache fixes ([#83](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/issues/83)) ([f57dcb3](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/commit/f57dcb341d7ef0805af601ed9c25103aae55175e))
+
 ## [0.33.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4py/compare/v0.32.0...v0.33.0) (2026-11-14)
 
 
