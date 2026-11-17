@@ -486,5 +486,101 @@ class TestArgsTest(unittest.TestCase):
         self.assertEqual(len(cache["methods"]), 2)
 
 
+class CacheDiscardTest(unittest.TestCase):
+    """Discard reasons (upstream 34e2163080): a full re-run must not look
+    like a warm one — every discarded cache surfaces its reason."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.path = self.root / MUTATION_CACHE_FILE
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _meta(self, operators=("arithmetic",)):
+        return MutationCacheMeta.current(tuple(operators), ())
+
+    def _write(self, payload) -> None:
+        self.path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+
+    def _load(self, meta=None):
+        reasons = []
+        cache = MutationCache.load(self.path, meta or self._meta(), reasons.append)
+        return cache, reasons
+
+    def test_missing_file_loads_fresh_silently(self):
+        reasons = []
+        cache = MutationCache.load(self.path, self._meta(), reasons.append)
+        self.assertEqual(cache.methods, {})
+        self.assertEqual(reasons, [])
+
+    def test_valid_cache_loads_without_a_discard(self):
+        self._write(
+            {"version": MUTATION_CACHE_VERSION, "meta": self._meta().to_dict(), "methods": {}}
+        )
+        cache, reasons = self._load()
+        self.assertEqual(cache.methods, {})
+        self.assertEqual(reasons, [])
+
+    def test_corrupt_json_discards_with_a_reason(self):
+        self._write("{not json")
+        _, reasons = self._load()
+        self.assertEqual(reasons, ["mutation cache discarded: corrupt JSON"])
+
+    def test_non_object_json_discards_with_a_reason(self):
+        self._write(["not", "an", "object"])
+        _, reasons = self._load()
+        self.assertEqual(reasons, ["mutation cache discarded: not a JSON object"])
+
+    def test_version_mismatch_discards_with_a_reason(self):
+        self._write(
+            {
+                "version": MUTATION_CACHE_VERSION + 1,
+                "meta": self._meta().to_dict(),
+                "methods": {},
+            }
+        )
+        _, reasons = self._load()
+        self.assertEqual(
+            reasons,
+            [f"mutation cache discarded: version mismatch (expected {MUTATION_CACHE_VERSION})"],
+        )
+
+    def test_meta_mismatch_discards_with_a_reason(self):
+        self._write(
+            {
+                "version": MUTATION_CACHE_VERSION,
+                "meta": self._meta(("equality",)).to_dict(),
+                "methods": {},
+            }
+        )
+        _, reasons = self._load(self._meta(("arithmetic",)))
+        self.assertEqual(
+            reasons,
+            ["mutation cache discarded: meta mismatch (operators or test args changed)"],
+        )
+
+    def test_without_on_discard_a_corrupt_cache_still_loads_fresh(self):
+        self._write("{not json")
+        cache = MutationCache.load(self.path, self._meta())
+        self.assertEqual(cache.methods, {})
+
+    def test_run_path_prints_the_discard_reason_to_stderr(self):
+        # Wiring: the gate run path forwards the reason to stderr.
+        (self.root / "a.py").write_text(FIXTURE)
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "test_a.py").write_text(TEST_BODY)
+        _cov(self.root)
+        self._write("{not json")
+        proc = subprocess.run(
+            [sys.executable, "-m", "crap4py", "mutation", "a.py"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("crap4py mutation: mutation cache discarded: corrupt JSON", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

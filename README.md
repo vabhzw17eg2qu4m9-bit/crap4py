@@ -88,6 +88,7 @@ crap4py string-hazards       # flag escaped f-strings, regex anchors, literal-pa
 crap4py identical-branches   # flag the copy-paste-edit family inside one construct
 crap4py enum-name-contract   # flag built-in .name contracts inside enum bodies
 crap4py collapsible-flow     # flag collapsible nested ifs and redundant/flattenable else chains
+crap4py implicit-state       # flag implicit FSMs: flag clusters, scattered mutators, flag combos
 crap4py skill                # print the crap4py profiling skill
 crap4py --help               # print usage
 ```
@@ -217,6 +218,7 @@ to them — see `crap4py ignore_filter.IGNORABLE_GATES`.
 | `identical-branches [--severity warning\|error] [paths...]` | the copy-paste-edit family — syntactically identical pieces inside one construct, compared by canonical form (whitespace/comment/parenthesis-independent, commutative operands sorted, same-operator nests flattened): duplicate conditions or branch bodies in one `if`/`elif` chain; duplicate operands in one `and`/`or` chain plus absorbed operands (`a or b and a`); identical ternary branches (`x if c else x`); duplicate positional arguments in one call (keyword arguments exempt, all-literal lists exempt, a literal never the repeat); duplicate except bodies in one `try` (exception types are semantically distinct and never compared). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 | `enum-name-contract [--severity warning\|error] [paths...]` | a read of the built-in `.name` member inside an enum class body on a provable enum receiver: `self.name`; a bare `name` in an instance method with no local shadowing (implicit self); the enum's own constants (`RED.name` or `Color.RED.name`); loop variables iterating the enum (`for c in Color`, `for k in Color.__members__`, `for c in list(Color)`, comprehension forms); parameters annotated with the enclosing enum (`c: Color`, string spellings included). `Color.RED.name` is `"RED"` until the constant is renamed — and every persisted YAML/JSON/DB row written from it drifts with the rename; the fix is an explicit value field contracted on as `.value` (`.value` itself is never flagged; `.index` has no Python analog and is omitted). An enum declaring its own `name` attribute shadows the built-in; `staticmethod`/`classmethod` bodies have no implicit self; usages outside enum bodies are out of scope (Tier 2). Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
 | `collapsible-flow [--severity warning\|error] [paths...]` | control-flow nesting a semantics-preserving mechanical rewrite can flatten: a nested `if a:` / `if b:` with no `else` on either level merges into `if a and b:` (`and` short-circuits, so order is preserved); a redundant `else` after an always-exiting then-suite (`return`/`raise`/bare `raise`/`break`/`continue`, an if/else pair whose both branches exit, a `try` whose body exits and whose `finally` is absent, `pass`-only, or exiting) dedents away (an `elif` link's else nests under the enclosing `else` first — a bare dedent would escape its scope); an `elif` after a terminal then is a flattening hint (guard sequence or dispatch table — not a mechanical rewrite, so no fix-shaped message). An inner `if` without an `else` never counts as exiting (it falls through — dedenting would change behavior); `match` bodies are never exit-analyzed (as upstream's `switch`) but still scanned. Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. |
+| `implicit-state [--severity warning\|error] [--min-flags N] [--min-mutators N] [paths...]` | *implicit finite state machines* (upstream 34e2163080): a lifecycle-shaped `bool` field (`is_`/`has_`/`was_`/`will_`/`should_`/`can_` prefixes or `_loaded`/`_ready`/`_failed`/… suffixes, camelCase spellings `isLoading`/`shardLoaded` included) mutated from ≥ `--min-mutators` (default 2) distinct functions; a `status`/`state`/`phase`/`stage`/`mode`/`lifecycle` field of any type assigned from ≥ `--min-mutators` functions; a class holding ≥ `--min-flags` (default 3) assigned lifecycle flags with one mutated from ≥ `--min-mutators` functions (a boolean-cluster state machine — model it with an enum/sealed state); an `if` condition reading ≥ 2 declared lifecycle flags via `self.flag` (`elif` chains: each `If` counts; other-object reads `other.is_ready` excluded). Name-shape heuristic on parsed sources — it cannot prove reachability or races, it marks candidates for an explicit state model. Class-body annotated `bool` fields and `True`/`False` assignments count; `ClassVar`/`Final` never do; locals and parameters are never fields. Default `warning`: findings print `[WARN]` and exit 0; `--severity error` exits 2. Not ignorable (upstream `ignorable: false`, and this port has no opt-in). |
 
 `unused-code` and `unused-files` are whole-project checks: given explicit
 paths they skip with `not meaningful for a partial selection` (exit `0`),
@@ -422,6 +424,44 @@ if inside a `case` suite is flagged like any other. Severity as above
 flatness, not bugs; `--severity error` exits 2); ignore markers
 (`# ignore:collapsible_flow`) are honored — the gate is ignorable.
 
+`implicit-state` is the port of crap4dart's `implicit_state` gate
+(34e2163080): surfaces *implicit finite state machines* — lifecycle
+logic spread over boolean flag clusters, multi-mutator status fields and
+conditions that branch on flag combinations. All three make invalid
+states representable and transitions unauditable; the fix is an explicit
+model (an `Enum`, a sealed hierarchy of state classes). Four checks per
+class (nested classes are separate scans):
+
+- scattered lifecycle flag — one lifecycle-shaped `bool` field mutated
+  from ≥ `--min-mutators` distinct functions;
+- scattered status field — a `status`/`state`/`phase`/`stage`/`mode`/
+  `lifecycle` field (any type) assigned from ≥ `--min-mutators`
+  functions;
+- boolean-cluster FSM — ≥ `--min-flags` assigned lifecycle flags of one
+  class, at least one mutated from ≥ `--min-mutators` functions;
+- flag-combination condition — an `if` test reading ≥ 2 declared
+  lifecycle flags via `self.flag` (each `elif` is its own `If` node;
+  reads through other objects don't count; `while`/`for`/ternary
+  conditions aren't visited, as upstream).
+
+Name shapes port to snake_case (`is_loading`, `has_failed`,
+`shard_loaded`, `engine_ready`) AND keep the camelCase spellings
+(`isLoading`, `shardLoaded`) since Python code may carry them. Fields
+count when declared in a class body — annotated `bool` (`is_done: bool`)
+or assigned `True`/`False` — and never when `ClassVar`/`Final`-annotated;
+locals and parameters are never fields. Mutation sites count by NAME
+only: any `X.attr = …` (plain, annotated-with-value, augmented) whose
+attribute matches a declared field, regardless of the target object,
+attributed to the enclosing function (closures attribute to their
+enclosing method, as upstream). Detection is deliberately syntactic —
+it cannot prove reachability, dead states, races or cross-layer
+inconsistency. Severity as above (`warning` default — findings are
+candidates for an explicit-model refactor, not bugs; `--severity error`
+exits 2). NOT ignorable: upstream defaults `ignorable: false` and this
+port has no opt-in, so ignore markers do not apply. Upstream's cluster
+check hardcodes `>= 2` where its spec says the `min_mutators` knob;
+this port follows the spec (the knob) — the two agree at the defaults.
+
 ```bash
 crap4py banned-imports --from 'ui/**' --forbid 'db/*' --message 'UI must not touch DB'
 ```
@@ -509,12 +549,23 @@ re-confirmed once against the full suite and only the confirmed outcome is
 reported and cached (`; test-scoped N (M re-confirmed killed)` in the
 summary). `--scope-tests` is deliberately not part of the cache meta guard.
 
-End-of-run tree integrity check (port of crap4dart 8b2e8e8): the engine
-snapshots every file it will mutate before the loop and re-verifies the whole
-tree in an outer `finally` — a per-site restore can be defeated out-of-process
-(external write, killed interpreter), so any drift is re-restored AND surfaced
-as `INTEGRITY: re-restored after run: <files>` in the summary plus a stderr
-warning telling you to treat the run as suspect.
+End-of-run tree integrity check (port of crap4dart 8b2e8e8; verdict
+hardening 34e2163080): the engine snapshots every file it will mutate
+before the loop and re-verifies the whole tree in an outer `finally` — a
+per-site restore can be defeated out-of-process (external write, killed
+interpreter), so any drift is re-restored AND surfaced as
+`INTEGRITY: re-restored after run: <files>` in the summary plus a stderr
+warning telling you to treat the run as suspect. Integrity violations
+also force the verdict to fail (one file-level violation per re-restored
+file): a perfect outcome table can no longer pass a run that left a
+mutant behind.
+
+Cache discard reasons (upstream 34e2163080): when a saved cache is
+thrown away — corrupt JSON, not a JSON object, version mismatch, or a
+meta mismatch (operators/`--test-args` changed) — the gate prints
+`crap4py mutation: mutation cache discarded: <reason>` on stderr instead
+of silently degenerating into a full re-run that looks identical to a
+warm one.
 
 crap4dart's remaining gate-framework features (severity, per-path
 threshold entries, yaml config, baselines) are not ported — ports are
@@ -579,7 +630,8 @@ _v = 0xFF00FF00  # ignore:magic_constants          granular: only this gate, thi
 Not ignorable: `folder-structure` (directory-level findings — nothing
 line- or file-scoped can address them), `similarity`/`memory`
 (informational, always exit 0), `profile`/`skill`/`reorder` (not gates —
-`reorder` is a deterministic source transform).
+`reorder` is a deterministic source transform), `implicit-state`
+(upstream `ignorable: false`, and the port has no opt-in).
 
 ## `crap4py similarity`
 
@@ -800,7 +852,7 @@ be files or directories.
 |------|------------------------------------------------------------------------|
 | `0`  | Success (max CRAP ≤ threshold, or no files to analyze); `similarity` always exits 0 (informational) except an over-broad scan scope (below). |
 | `1`  | Usage error (bad flags, `--changed` + paths or `--diff-base`, unknown `--diff-base` ref/any git diff failure, `--strict` with missing/unreadable/empty/unparseable coverage or a missing explicit path, unreadable source); `similarity` scan scope above 20000 files (`similarity: similarity scan scope matches N files, above the 20000-file safety cap: narrow \`include\`/\`dirs\` or extend \`exclude\`` on stderr). |
-| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error`, `enum-name-contract --severity error` and `collapsible-flow --severity error` violations, and `reorder --dry-run` when any file would change. |
+| `2`  | CRAP threshold exceeded (`CRAP threshold exceeded: <max> > <n>` on stderr); also `profile --threshold` and gate-subcommand (`complexity`, `file-naming`, `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`, `banned-imports`, `magic-constants`, `scattered-constants`, `test-assertions`, `folder-structure`, `duplicates`, `mutation`, `tuple-signatures`) violations, `string-hazards --severity error`, `identical-branches --severity error`, `enum-name-contract --severity error`, `collapsible-flow --severity error` and `implicit-state --severity error` violations, and `reorder --dry-run` when any file would change. |
 
 ## Cyclomatic complexity rules
 
